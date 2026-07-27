@@ -6,9 +6,16 @@ from tempfile import TemporaryDirectory
 from zipfile import BadZipFile, ZipFile
 
 import geopandas as gpd
-from fastapi import FastAPI, File, HTTPException, Response, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
 
-from app.models.schemas import ParseResult, RepairReport, ValidationReport
+from app.converters.base_converter import load_any
+from app.converters.format_converter import convert
+from app.models.schemas import (
+    ConversionResult,
+    ParseResult,
+    RepairReport,
+    ValidationReport,
+)
 from app.parsers.geojson_parser import GeoJSONParseError, parse_geojson
 from app.parsers.kml_parser import KMLParseError, parse_kml
 from app.parsers.shapefile_parser import ShapefileParseError, parse_shapefile
@@ -182,5 +189,82 @@ async def repair_geojson_upload(file: UploadFile = File(...)) -> Response:
             "Content-Disposition": f'attachment; filename="{download_name}"',
             "X-Repair-Report": encoded_report,
             "X-Repair-Report-Encoding": "base64url",
+        },
+    )
+
+
+@app.post("/convert")
+async def convert_upload(
+    file: UploadFile = File(...),
+    target_format: str = Form(...),
+    target_crs: str | None = Form(None),
+) -> Response:
+    """Convert an uploaded geospatial file and return it as a download."""
+    filename = Path(file.filename or "upload").name
+    with TemporaryDirectory(prefix="geofile-toolkit-") as temporary_directory:
+        workspace = Path(temporary_directory)
+        upload_path = workspace / filename
+        upload_path.write_bytes(await file.read())
+
+        source_path = upload_path
+        source_format = upload_path.suffix.lower().lstrip(".")
+        if upload_path.suffix.lower() == ".zip":
+            try:
+                with ZipFile(upload_path) as archive:
+                    _extract_zip_safely(archive, workspace)
+            except BadZipFile as exc:
+                raise HTTPException(status_code=400, detail="Invalid ZIP archive") from exc
+            shapefiles = list(workspace.rglob("*.shp"))
+            if len(shapefiles) != 1:
+                raise HTTPException(
+                    status_code=400,
+                    detail="A Shapefile ZIP must contain exactly one .shp file",
+                )
+            source_path = shapefiles[0]
+            source_format = "shapefile"
+
+        normalized_target = target_format.strip().lower()
+        extensions = {
+            "shapefile": ".shp",
+            "shp": ".shp",
+            "geojson": ".geojson",
+            "json": ".geojson",
+            "kml": ".kml",
+        }
+        output_path = workspace / f"{source_path.stem}_converted{extensions[normalized_target]}"
+        frame = load_any(str(source_path))
+        convert(frame, normalized_target, str(output_path), target_crs)
+
+        download_path = output_path
+        media_type = {
+            ".geojson": "application/geo+json",
+            ".kml": "application/vnd.google-earth.kml+xml",
+        }.get(output_path.suffix, "application/octet-stream")
+        if normalized_target in {"shapefile", "shp"}:
+            download_path = workspace / f"{source_path.stem}_converted.zip"
+            with ZipFile(download_path, mode="w") as archive:
+                for component in output_path.parent.glob(f"{output_path.stem}.*"):
+                    archive.write(component, arcname=component.name)
+            media_type = "application/zip"
+
+        result = ConversionResult(
+            original_filename=filename,
+            source_format=source_format,
+            target_format=normalized_target,
+            target_crs=target_crs,
+            output_filename=download_path.name,
+        )
+        encoded_result = base64.urlsafe_b64encode(
+            result.model_dump_json().encode("utf-8")
+        ).decode("ascii")
+        content = download_path.read_bytes()
+
+    return Response(
+        content=content,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{download_path.name}"',
+            "X-Conversion-Result": encoded_result,
+            "X-Conversion-Result-Encoding": "base64url",
         },
     )
