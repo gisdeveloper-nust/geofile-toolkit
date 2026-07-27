@@ -7,6 +7,7 @@ from zipfile import BadZipFile, ZipFile
 from fastapi import FastAPI, File, HTTPException, UploadFile
 
 from app.models.schemas import ParseResult
+from app.parsers.geojson_parser import GeoJSONParseError, parse_geojson
 from app.parsers.shapefile_parser import ShapefileParseError, parse_shapefile
 
 app = FastAPI(title="GeoFile Toolkit")
@@ -66,3 +67,23 @@ async def parse_shapefile_upload(
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
         return ParseResult(**result)
+
+
+@app.post("/parse/geojson", response_model=ParseResult)
+async def parse_geojson_upload(file: UploadFile = File(...)) -> ParseResult:
+    """Parse an uploaded GeoJSON document and return its metadata."""
+    filename = file.filename or ""
+    if Path(filename).suffix.lower() not in {".geojson", ".json"}:
+        raise HTTPException(
+            status_code=400, detail="Upload must be a .geojson or .json file"
+        )
+
+    with TemporaryDirectory(prefix="geofile-toolkit-") as temporary_directory:
+        upload_path = Path(temporary_directory) / Path(filename).name
+        upload_path.write_bytes(await file.read())
+        try:
+            result = parse_geojson(str(upload_path))
+        except GeoJSONParseError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return ParseResult(**result)
