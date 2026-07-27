@@ -10,6 +10,7 @@ from fastapi import FastAPI, File, HTTPException, Response, UploadFile
 
 from app.models.schemas import ParseResult, RepairReport, ValidationReport
 from app.parsers.geojson_parser import GeoJSONParseError, parse_geojson
+from app.parsers.kml_parser import KMLParseError, parse_kml
 from app.parsers.shapefile_parser import ShapefileParseError, parse_shapefile
 from app.repairs.geometry_repair import repair_batch
 from app.validators.geometry_validator import detect_geometry_issues
@@ -88,6 +89,24 @@ async def parse_geojson_upload(file: UploadFile = File(...)) -> ParseResult:
         try:
             result = parse_geojson(str(upload_path))
         except GeoJSONParseError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    return ParseResult(**result)
+
+
+@app.post("/parse/kml", response_model=ParseResult)
+async def parse_kml_upload(file: UploadFile = File(...)) -> ParseResult:
+    """Parse an uploaded KML document and return its metadata."""
+    filename = file.filename or ""
+    if Path(filename).suffix.lower() != ".kml":
+        raise HTTPException(status_code=400, detail="Upload must be a .kml file")
+
+    with TemporaryDirectory(prefix="geofile-toolkit-") as temporary_directory:
+        upload_path = Path(temporary_directory) / Path(filename).name
+        upload_path.write_bytes(await file.read())
+        try:
+            result = parse_kml(str(upload_path))
+        except KMLParseError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return ParseResult(**result)
