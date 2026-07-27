@@ -54,6 +54,69 @@ reference system, bounding box, and attribute field names and types:
 }
 ```
 
+## Parse GeoJSON
+
+`POST /parse/geojson` accepts a `.geojson` or `.json` FeatureCollection and
+returns the same metadata shape as the shapefile parser.
+
+```bash
+curl -X POST "http://127.0.0.1:8000/parse/geojson" \
+  -H "accept: application/json" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@path/to/data.geojson"
+```
+
+Malformed JSON, missing `type` or `features` keys, and empty FeatureCollections
+produce clear client error responses.
+
+## Validate GeoJSON
+
+`POST /validate/geojson` checks every feature without changing the uploaded
+data. The response reports valid and invalid feature totals and describes each
+invalid geometry.
+
+```bash
+curl -X POST "http://127.0.0.1:8000/validate/geojson" \
+  -H "accept: application/json" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@path/to/data.geojson"
+```
+
+Example response:
+
+```json
+{
+  "feature_count": 2,
+  "valid_count": 1,
+  "invalid_count": 1,
+  "issues": [
+    {
+      "feature_index": 1,
+      "issue_type": "self_intersection",
+      "description": "Self-intersection[1 1]"
+    }
+  ]
+}
+```
+
+## Repair GeoJSON
+
+`POST /repair/geojson` repairs fixable geometries and returns the resulting
+GeoJSON as a file download. The `X-Repair-Report` response header contains the
+`RepairReport` JSON encoded as base64url; `X-Repair-Report-Encoding` identifies
+that encoding.
+
+```bash
+curl -X POST "http://127.0.0.1:8000/repair/geojson" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@path/to/data.geojson" \
+  -D repair-headers.txt \
+  -o data_repaired.geojson
+```
+
+The downloaded file is standard GeoJSON. The repair report lists each invalid
+feature with a `fixed` or `unfixable` status and includes aggregate counts.
+
 Run the automated tests with:
 
 ```bash
