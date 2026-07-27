@@ -4,11 +4,13 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 from zipfile import BadZipFile, ZipFile
 
+import geopandas as gpd
 from fastapi import FastAPI, File, HTTPException, UploadFile
 
-from app.models.schemas import ParseResult
+from app.models.schemas import ParseResult, ValidationReport
 from app.parsers.geojson_parser import GeoJSONParseError, parse_geojson
 from app.parsers.shapefile_parser import ShapefileParseError, parse_shapefile
+from app.validators.geometry_validator import detect_geometry_issues
 
 app = FastAPI(title="GeoFile Toolkit")
 
@@ -87,3 +89,34 @@ async def parse_geojson_upload(file: UploadFile = File(...)) -> ParseResult:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return ParseResult(**result)
+
+
+@app.post("/validate/geojson", response_model=ValidationReport)
+async def validate_geojson_upload(
+    file: UploadFile = File(...),
+) -> ValidationReport:
+    """Validate every geometry in an uploaded GeoJSON document."""
+    filename = file.filename or ""
+    if Path(filename).suffix.lower() not in {".geojson", ".json"}:
+        raise HTTPException(
+            status_code=400, detail="Upload must be a .geojson or .json file"
+        )
+
+    with TemporaryDirectory(prefix="geofile-toolkit-") as temporary_directory:
+        upload_path = Path(temporary_directory) / Path(filename).name
+        upload_path.write_bytes(await file.read())
+        try:
+            metadata = parse_geojson(str(upload_path))
+        except GeoJSONParseError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        frame = gpd.read_file(upload_path)
+        issues = detect_geometry_issues(frame)
+
+    invalid_count = len(issues)
+    feature_count = metadata["feature_count"]
+    return ValidationReport(
+        feature_count=feature_count,
+        valid_count=feature_count - invalid_count,
+        invalid_count=invalid_count,
+        issues=issues,
+    )
