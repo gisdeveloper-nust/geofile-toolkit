@@ -122,3 +122,10 @@ Run the automated tests with:
 ```bash
 python -m pytest
 ```
+
+## Roadmap
+
+- [x] Shapefile parser
+- [x] GeoJSON parser + validation + repair
+- [ ] KML parser
+- [ ] Format conversion layer
