@@ -2,6 +2,7 @@
 
 from typing import Any, Iterable
 
+import geopandas as gpd
 from shapely.geometry.base import BaseGeometry
 from shapely.validation import explain_validity
 
@@ -63,3 +64,19 @@ def check_validity(geom: BaseGeometry | None) -> dict[str, Any]:
         "issue_type": issue_type,
         "description": description,
     }
+
+
+def detect_geometry_issues(gdf: gpd.GeoDataFrame) -> list[dict[str, Any]]:
+    """Return one issue record for every invalid feature in a GeoDataFrame."""
+    issues: list[dict[str, Any]] = []
+    for feature_index, geometry in gdf.geometry.items():
+        result = check_validity(geometry)
+        if not result["is_valid"]:
+            issues.append(
+                {
+                    "feature_index": feature_index,
+                    "issue_type": result["issue_type"],
+                    "description": result["description"],
+                }
+            )
+    return issues
