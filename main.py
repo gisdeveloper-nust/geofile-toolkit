@@ -7,6 +7,8 @@ from zipfile import BadZipFile, ZipFile
 
 import geopandas as gpd
 from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from pyproj import CRS
+from pyproj.exceptions import CRSError
 
 from app.converters.base_converter import load_any
 from app.converters.format_converter import convert
@@ -207,7 +209,13 @@ async def convert_upload(
         upload_path.write_bytes(await file.read())
 
         source_path = upload_path
-        source_format = upload_path.suffix.lower().lstrip(".")
+        source_formats = {
+            ".shp": "shapefile",
+            ".geojson": "geojson",
+            ".json": "geojson",
+            ".kml": "kml",
+        }
+        source_format = source_formats.get(upload_path.suffix.lower())
         if upload_path.suffix.lower() == ".zip":
             try:
                 with ZipFile(upload_path) as archive:
@@ -223,24 +231,70 @@ async def convert_upload(
             source_path = shapefiles[0]
             source_format = "shapefile"
 
-        normalized_target = target_format.strip().lower()
+        if source_format is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Unsupported source format; upload Shapefile ZIP, GeoJSON, or KML",
+            )
+
+        target_aliases = {
+            "shapefile": "shapefile",
+            "shp": "shapefile",
+            "geojson": "geojson",
+            "json": "geojson",
+            "kml": "kml",
+        }
+        normalized_target = target_aliases.get(target_format.strip().lower())
+        if normalized_target is None:
+            raise HTTPException(
+                status_code=400,
+                detail="Unsupported target format; use shapefile, geojson, or kml",
+            )
+        if source_format == normalized_target:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported format combination: {source_format} to {normalized_target}",
+            )
+
+        effective_target_crs = target_crs
+        if target_crs:
+            try:
+                parsed_target_crs = CRS.from_user_input(target_crs)
+            except CRSError as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"Unsupported CRS code: {target_crs}"
+                ) from exc
+            if normalized_target == "kml" and parsed_target_crs != CRS.from_epsg(4326):
+                raise HTTPException(
+                    status_code=400,
+                    detail="KML output supports only EPSG:4326",
+                )
+        elif normalized_target == "kml":
+            effective_target_crs = "EPSG:4326"
+
         extensions = {
             "shapefile": ".shp",
-            "shp": ".shp",
             "geojson": ".geojson",
-            "json": ".geojson",
             "kml": ".kml",
         }
         output_path = workspace / f"{source_path.stem}_converted{extensions[normalized_target]}"
-        frame = load_any(str(source_path))
-        convert(frame, normalized_target, str(output_path), target_crs)
+        try:
+            frame = load_any(str(source_path))
+            convert(
+                frame,
+                normalized_target,
+                str(output_path),
+                effective_target_crs,
+            )
+        except (OSError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"Conversion failed: {exc}") from exc
 
         download_path = output_path
         media_type = {
             ".geojson": "application/geo+json",
             ".kml": "application/vnd.google-earth.kml+xml",
         }.get(output_path.suffix, "application/octet-stream")
-        if normalized_target in {"shapefile", "shp"}:
+        if normalized_target == "shapefile":
             download_path = workspace / f"{source_path.stem}_converted.zip"
             with ZipFile(download_path, mode="w") as archive:
                 for component in output_path.parent.glob(f"{output_path.stem}.*"):
@@ -251,7 +305,7 @@ async def convert_upload(
             original_filename=filename,
             source_format=source_format,
             target_format=normalized_target,
-            target_crs=target_crs,
+            target_crs=effective_target_crs,
             output_filename=download_path.name,
         )
         encoded_result = base64.urlsafe_b64encode(
