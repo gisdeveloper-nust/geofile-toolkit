@@ -45,3 +45,21 @@ class RepairReport(BaseModel):
     repaired_count: int = Field(ge=0)
     unfixable_count: int = Field(ge=0)
     repairs: list[RepairAction]
+
+
+class ConversionRequest(BaseModel):
+    """Parameters controlling a geospatial file conversion."""
+
+    source_format: str | None = None
+    target_format: str
+    target_crs: str | None = None
+
+
+class ConversionResult(BaseModel):
+    """Metadata describing a completed conversion."""
+
+    original_filename: str
+    source_format: str
+    target_format: str
+    target_crs: str | None = None
+    output_filename: str
