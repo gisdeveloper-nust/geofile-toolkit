@@ -1,15 +1,17 @@
 """GeoFile Toolkit application entry point."""
 
+import base64
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from zipfile import BadZipFile, ZipFile
 
 import geopandas as gpd
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, File, HTTPException, Response, UploadFile
 
-from app.models.schemas import ParseResult, ValidationReport
+from app.models.schemas import ParseResult, RepairReport, ValidationReport
 from app.parsers.geojson_parser import GeoJSONParseError, parse_geojson
 from app.parsers.shapefile_parser import ShapefileParseError, parse_shapefile
+from app.repairs.geometry_repair import repair_batch
 from app.validators.geometry_validator import detect_geometry_issues
 
 app = FastAPI(title="GeoFile Toolkit")
@@ -119,4 +121,47 @@ async def validate_geojson_upload(
         valid_count=feature_count - invalid_count,
         invalid_count=invalid_count,
         issues=issues,
+    )
+
+
+@app.post("/repair/geojson")
+async def repair_geojson_upload(file: UploadFile = File(...)) -> Response:
+    """Repair GeoJSON geometries and return a downloadable repaired document."""
+    filename = file.filename or ""
+    if Path(filename).suffix.lower() not in {".geojson", ".json"}:
+        raise HTTPException(
+            status_code=400, detail="Upload must be a .geojson or .json file"
+        )
+
+    with TemporaryDirectory(prefix="geofile-toolkit-") as temporary_directory:
+        upload_path = Path(temporary_directory) / Path(filename).name
+        upload_path.write_bytes(await file.read())
+        try:
+            metadata = parse_geojson(str(upload_path))
+        except GeoJSONParseError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        frame = gpd.read_file(upload_path)
+        repaired_frame, repairs = repair_batch(frame)
+        repaired_geojson = repaired_frame.to_json()
+
+    report = RepairReport(
+        feature_count=metadata["feature_count"],
+        repaired_count=sum(item["status"] == "fixed" for item in repairs),
+        unfixable_count=sum(item["status"] == "unfixable" for item in repairs),
+        repairs=repairs,
+    )
+    encoded_report = base64.urlsafe_b64encode(
+        report.model_dump_json().encode("utf-8")
+    ).decode("ascii")
+    download_name = f"{Path(filename).stem}_repaired.geojson"
+
+    return Response(
+        content=repaired_geojson,
+        media_type="application/geo+json",
+        headers={
+            "Content-Disposition": f'attachment; filename="{download_name}"',
+            "X-Repair-Report": encoded_report,
+            "X-Repair-Report-Encoding": "base64url",
+        },
     )
