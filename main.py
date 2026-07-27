@@ -2,11 +2,12 @@
 
 import base64
 from pathlib import Path
-from tempfile import TemporaryDirectory
+from tempfile import TemporaryDirectory, mkdtemp
 from zipfile import BadZipFile, ZipFile
 
 import geopandas as gpd
-from fastapi import FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi.responses import FileResponse
 from pyproj import CRS
 from pyproj.exceptions import CRSError
 
@@ -22,6 +23,7 @@ from app.parsers.geojson_parser import GeoJSONParseError, parse_geojson
 from app.parsers.kml_parser import KMLParseError, parse_kml
 from app.parsers.shapefile_parser import ShapefileParseError, parse_shapefile
 from app.repairs.geometry_repair import repair_batch
+from app.utils.file_cleanup import cleanup_temp_files
 from app.validators.geometry_validator import detect_geometry_issues
 
 app = FastAPI(title="GeoFile Toolkit")
@@ -42,49 +44,58 @@ def _extract_zip_safely(archive: ZipFile, destination: Path) -> None:
     archive.extractall(destination)
 
 
+def _background_workspace(background_tasks: BackgroundTasks) -> Path:
+    workspace = Path(mkdtemp(prefix="geofile-toolkit-"))
+    background_tasks.add_task(cleanup_temp_files, workspace)
+    return workspace
+
+
 @app.post("/parse/shapefile", response_model=ParseResult)
 async def parse_shapefile_upload(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
 ) -> ParseResult:
     """Extract an uploaded shapefile archive and return its metadata."""
     if not file.filename or not file.filename.lower().endswith(".zip"):
         raise HTTPException(status_code=400, detail="Upload must be a ZIP archive")
 
-    with TemporaryDirectory(prefix="geofile-toolkit-") as temporary_directory:
-        workspace = Path(temporary_directory)
-        archive_path = workspace / "upload.zip"
-        archive_path.write_bytes(await file.read())
+    workspace = _background_workspace(background_tasks)
+    archive_path = workspace / "upload.zip"
+    archive_path.write_bytes(await file.read())
 
-        try:
-            with ZipFile(archive_path) as archive:
-                _extract_zip_safely(archive, workspace)
-        except BadZipFile as exc:
-            raise HTTPException(status_code=400, detail="Invalid ZIP archive") from exc
+    try:
+        with ZipFile(archive_path) as archive:
+            _extract_zip_safely(archive, workspace)
+    except BadZipFile as exc:
+        raise HTTPException(status_code=400, detail="Invalid ZIP archive") from exc
 
-        shapefiles = [
-            path
-            for path in workspace.rglob("*")
-            if path.is_file() and path.suffix.lower() == ".shp"
-        ]
-        if not shapefiles:
-            raise HTTPException(
-                status_code=400, detail="Archive does not contain a .shp file"
-            )
-        if len(shapefiles) > 1:
-            raise HTTPException(
-                status_code=400, detail="Archive must contain exactly one shapefile"
-            )
+    shapefiles = [
+        path
+        for path in workspace.rglob("*")
+        if path.is_file() and path.suffix.lower() == ".shp"
+    ]
+    if not shapefiles:
+        raise HTTPException(
+            status_code=400, detail="Archive does not contain a .shp file"
+        )
+    if len(shapefiles) > 1:
+        raise HTTPException(
+            status_code=400, detail="Archive must contain exactly one shapefile"
+        )
 
-        try:
-            result = parse_shapefile(str(shapefiles[0]))
-        except ShapefileParseError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    try:
+        result = parse_shapefile(str(shapefiles[0]))
+    except ShapefileParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
-        return ParseResult(**result)
+    return ParseResult(**result)
 
 
 @app.post("/parse/geojson", response_model=ParseResult)
-async def parse_geojson_upload(file: UploadFile = File(...)) -> ParseResult:
+async def parse_geojson_upload(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+) -> ParseResult:
     """Parse an uploaded GeoJSON document and return its metadata."""
     filename = file.filename or ""
     if Path(filename).suffix.lower() not in {".geojson", ".json"}:
@@ -92,31 +103,34 @@ async def parse_geojson_upload(file: UploadFile = File(...)) -> ParseResult:
             status_code=400, detail="Upload must be a .geojson or .json file"
         )
 
-    with TemporaryDirectory(prefix="geofile-toolkit-") as temporary_directory:
-        upload_path = Path(temporary_directory) / Path(filename).name
-        upload_path.write_bytes(await file.read())
-        try:
-            result = parse_geojson(str(upload_path))
-        except GeoJSONParseError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    workspace = _background_workspace(background_tasks)
+    upload_path = workspace / Path(filename).name
+    upload_path.write_bytes(await file.read())
+    try:
+        result = parse_geojson(str(upload_path))
+    except GeoJSONParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return ParseResult(**result)
 
 
 @app.post("/parse/kml", response_model=ParseResult)
-async def parse_kml_upload(file: UploadFile = File(...)) -> ParseResult:
+async def parse_kml_upload(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+) -> ParseResult:
     """Parse an uploaded KML document and return its metadata."""
     filename = file.filename or ""
     if Path(filename).suffix.lower() != ".kml":
         raise HTTPException(status_code=400, detail="Upload must be a .kml file")
 
-    with TemporaryDirectory(prefix="geofile-toolkit-") as temporary_directory:
-        upload_path = Path(temporary_directory) / Path(filename).name
-        upload_path.write_bytes(await file.read())
-        try:
-            result = parse_kml(str(upload_path))
-        except KMLParseError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    workspace = _background_workspace(background_tasks)
+    upload_path = workspace / Path(filename).name
+    upload_path.write_bytes(await file.read())
+    try:
+        result = parse_kml(str(upload_path))
+    except KMLParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return ParseResult(**result)
 
@@ -197,14 +211,15 @@ async def repair_geojson_upload(file: UploadFile = File(...)) -> Response:
 
 @app.post("/convert")
 async def convert_upload(
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     target_format: str = Form(...),
     target_crs: str | None = Form(None),
-) -> Response:
+) -> FileResponse:
     """Convert an uploaded geospatial file and return it as a download."""
     filename = Path(file.filename or "upload").name
-    with TemporaryDirectory(prefix="geofile-toolkit-") as temporary_directory:
-        workspace = Path(temporary_directory)
+    workspace = _background_workspace(background_tasks)
+    try:
         upload_path = workspace / filename
         upload_path.write_bytes(await file.read())
 
@@ -311,14 +326,17 @@ async def convert_upload(
         encoded_result = base64.urlsafe_b64encode(
             result.model_dump_json().encode("utf-8")
         ).decode("ascii")
-        content = download_path.read_bytes()
+    except Exception:
+        cleanup_temp_files(workspace)
+        raise
 
-    return Response(
-        content=content,
+    return FileResponse(
+        path=download_path,
         media_type=media_type,
+        filename=download_path.name,
         headers={
-            "Content-Disposition": f'attachment; filename="{download_path.name}"',
             "X-Conversion-Result": encoded_result,
             "X-Conversion-Result-Encoding": "base64url",
         },
+        background=background_tasks,
     )
