@@ -34,6 +34,7 @@ from app.parsers.gpx_parser import GPXParseError, parse_gpx
 from app.parsers.kml_parser import KMLParseError, parse_kml
 from app.parsers.shapefile_parser import ShapefileParseError, parse_shapefile
 from app.repairs.geometry_repair import repair_batch
+from app.utils.batch_processor import process_zip
 from app.utils.file_cleanup import cleanup_temp_files
 from app.validators.geometry_validator import detect_geometry_issues
 
@@ -391,3 +392,23 @@ async def convert_upload(
         },
         background=background_tasks,
     )
+
+
+@app.post("/batch/process")
+async def batch_process_upload(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    operation: str = Form(...),
+) -> list[dict]:
+    """Process mixed spatial files from an uploaded ZIP archive."""
+    filename = file.filename or ""
+    if Path(filename).suffix.lower() != ".zip":
+        raise HTTPException(status_code=400, detail="Upload must be a ZIP archive")
+
+    workspace = _background_workspace(background_tasks)
+    upload_path = workspace / Path(filename).name
+    upload_path.write_bytes(await file.read())
+    try:
+        return process_zip(str(upload_path), operation)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
