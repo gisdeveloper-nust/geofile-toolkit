@@ -93,10 +93,19 @@ def process_zip(zip_path: str, operation: str) -> list[dict[str, Any]]:
             for path in workspace.rglob("*")
             if path.is_file() and path.suffix.lower() in SUPPORTED_SOURCE_SUFFIXES
         )
-        return [
-            {
+        results: list[dict[str, Any]] = []
+        total_files = len(inputs)
+        for position, path in enumerate(inputs, start=1):
+            item: dict[str, Any] = {
                 "filename": str(path.relative_to(workspace)),
-                "result": _run_operation(path, operation, workspace),
+                "position": position,
+                "total_files": total_files,
             }
-            for path in inputs
-        ]
+            try:
+                item["result"] = _run_operation(path, operation, workspace)
+                item["status"] = "success"
+            except Exception as exc:
+                item["status"] = "failure"
+                item["error"] = str(exc)
+            results.append(item)
+        return results
