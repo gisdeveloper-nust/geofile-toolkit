@@ -31,6 +31,8 @@ curl http://127.0.0.1:8000/health
 | Shapefile | `.zip` containing `.shp`, `.shx`, and `.dbf` | `.zip` containing all Shapefile components | `/parse/shapefile` |
 | GeoJSON | `.geojson` or `.json` | `.geojson` | `/parse/geojson` |
 | KML | `.kml` with Placemark geometries | `.kml` in EPSG:4326 | `/parse/kml` |
+| GPX | `.gpx` with waypoints, tracks, or routes | `.gpx` for point-only or line-only data | `/parse/gpx` |
+| CSV | `.csv` with latitude/longitude columns | `.csv` for Point data | `/parse/csv` |
 
 ## Parse a shapefile
 
@@ -90,6 +92,46 @@ curl -X POST "http://127.0.0.1:8000/parse/kml" \
   -H "Content-Type: multipart/form-data" \
   -F "file=@path/to/places.kml"
 ```
+
+## Parse GPX
+
+`POST /parse/gpx` accepts GPX 1.0 or 1.1 and reports waypoint, track, and route
+counts separately, along with combined geometry metadata.
+
+```bash
+curl -X POST "http://127.0.0.1:8000/parse/gpx" \
+  -H "accept: application/json" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@path/to/activity.gpx"
+```
+
+Malformed XML, unsupported GPX versions, and files without waypoints, tracks,
+or routes produce clear client error responses.
+
+## Parse latitude/longitude CSV
+
+`POST /parse/csv` converts coordinate rows to EPSG:4326 Point geometries.
+Common column names such as `lat`/`lon`, `latitude`/`longitude`, and `y`/`x`
+are detected automatically.
+
+```bash
+curl -X POST "http://127.0.0.1:8000/parse/csv" \
+  -H "accept: application/json" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@path/to/points.csv"
+```
+
+For custom column names, provide the optional query parameters:
+
+```bash
+curl -X POST \
+  "http://127.0.0.1:8000/parse/csv?lat_col=Ycoord&lon_col=Xcoord" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@path/to/points.csv"
+```
+
+Coordinates must be numeric, with latitude between -90 and 90 and longitude
+between -180 and 180.
 
 ## Validate GeoJSON
 
@@ -171,6 +213,25 @@ Shapefile output is returned as a ZIP containing its component files.
 Conversion metadata is provided in the base64url-encoded
 `X-Conversion-Result` response header.
 
+## Batch ZIP processing
+
+`POST /batch/process` accepts a ZIP containing mixed supported spatial files.
+Each file is processed independently, so one corrupt input does not prevent
+valid files from completing. Every result includes its filename, progress
+position, success/failure status, and either a result or error message.
+
+Use `parse`, `validate`, or `convert` as the operation. Batch conversion
+defaults to GeoJSON; use `convert:kml`, `convert:gpx`, `convert:csv`, or
+another supported target to select the output format.
+
+```bash
+curl -X POST "http://127.0.0.1:8000/batch/process" \
+  -H "accept: application/json" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@path/to/mixed-spatial-files.zip" \
+  -F "operation=parse"
+```
+
 Run the automated tests with:
 
 ```bash
@@ -183,3 +244,6 @@ python -m pytest
 - [x] GeoJSON parser + validation + repair
 - [x] KML parser
 - [x] Format conversion layer
+- [x] GPX parser
+- [x] CSV latitude/longitude parser
+- [x] Mixed-file batch processing
