@@ -38,10 +38,41 @@ def convert(
     elif normalized_format == "kml":
         fiona.supported_drivers["KML"] = "rw"
         output_frame.to_file(output, driver="KML", engine="fiona", index=False)
+    elif normalized_format == "gpx":
+        geometry_types = set(output_frame.geometry.geom_type.dropna())
+        if geometry_types and geometry_types <= {"Point", "MultiPoint"}:
+            gpx_frame = output_frame.explode(index_parts=False)
+            layer = "waypoints"
+        elif geometry_types and geometry_types <= {
+            "LineString",
+            "MultiLineString",
+        }:
+            gpx_frame = output_frame
+            layer = "tracks"
+        else:
+            raise ValueError(
+                "GPX output supports point-only or line-only datasets"
+            )
+        gpx_frame.to_file(
+            output,
+            layer=layer,
+            driver="GPX",
+            engine="fiona",
+            index=False,
+            GPX_USE_EXTENSIONS="YES",
+        )
+    elif normalized_format == "csv":
+        geometry_types = set(output_frame.geometry.geom_type.dropna())
+        if geometry_types - {"Point"}:
+            raise ValueError("CSV output supports Point geometries only")
+        csv_frame = output_frame.copy()
+        csv_frame["longitude"] = csv_frame.geometry.x
+        csv_frame["latitude"] = csv_frame.geometry.y
+        csv_frame.drop(columns=csv_frame.geometry.name).to_csv(output, index=False)
     else:
         raise ValueError(
             f"Unsupported target format '{target_format}'; "
-            "expected shapefile, geojson, or kml"
+            "expected shapefile, geojson, kml, gpx, or csv"
         )
 
     return str(output)
