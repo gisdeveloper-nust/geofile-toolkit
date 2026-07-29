@@ -20,6 +20,7 @@ from app.models.schemas import (
     ValidationReport,
 )
 from app.parsers.geojson_parser import GeoJSONParseError, parse_geojson
+from app.parsers.gpx_parser import GPXParseError, parse_gpx
 from app.parsers.kml_parser import KMLParseError, parse_kml
 from app.parsers.shapefile_parser import ShapefileParseError, parse_shapefile
 from app.repairs.geometry_repair import repair_batch
@@ -133,6 +134,25 @@ async def parse_kml_upload(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     return ParseResult(**result)
+
+
+@app.post("/parse/gpx")
+async def parse_gpx_upload(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+) -> dict:
+    """Parse an uploaded GPX document and return layer metadata."""
+    filename = file.filename or ""
+    if Path(filename).suffix.lower() != ".gpx":
+        raise HTTPException(status_code=400, detail="Upload must be a .gpx file")
+
+    workspace = _background_workspace(background_tasks)
+    upload_path = workspace / Path(filename).name
+    upload_path.write_bytes(await file.read())
+    try:
+        return parse_gpx(str(upload_path))
+    except GPXParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 @app.post("/validate/geojson", response_model=ValidationReport)
