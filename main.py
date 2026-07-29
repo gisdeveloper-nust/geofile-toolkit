@@ -6,7 +6,16 @@ from tempfile import TemporaryDirectory, mkdtemp
 from zipfile import BadZipFile, ZipFile
 
 import geopandas as gpd
-from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Response, UploadFile
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+)
 from fastapi.responses import FileResponse
 from pyproj import CRS
 from pyproj.exceptions import CRSError
@@ -19,6 +28,7 @@ from app.models.schemas import (
     RepairReport,
     ValidationReport,
 )
+from app.parsers.csv_parser import CSVParseError, parse_csv
 from app.parsers.geojson_parser import GeoJSONParseError, parse_geojson
 from app.parsers.gpx_parser import GPXParseError, parse_gpx
 from app.parsers.kml_parser import KMLParseError, parse_kml
@@ -152,6 +162,27 @@ async def parse_gpx_upload(
     try:
         return parse_gpx(str(upload_path))
     except GPXParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/parse/csv")
+async def parse_csv_upload(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+    lat_col: str | None = Query(None),
+    lon_col: str | None = Query(None),
+) -> dict:
+    """Parse uploaded CSV latitude/longitude rows as point features."""
+    filename = file.filename or ""
+    if Path(filename).suffix.lower() != ".csv":
+        raise HTTPException(status_code=400, detail="Upload must be a .csv file")
+
+    workspace = _background_workspace(background_tasks)
+    upload_path = workspace / Path(filename).name
+    upload_path.write_bytes(await file.read())
+    try:
+        return parse_csv(str(upload_path), lat_col=lat_col, lon_col=lon_col)
+    except CSVParseError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
