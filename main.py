@@ -23,9 +23,15 @@ from pyproj.exceptions import CRSError
 from app.converters.base_converter import load_any
 from app.converters.format_converter import convert
 from app.analysis.topology_checker import summarize_topology_issues
-from app.analysis.spatial_ops import clip_layer, merge_layers, spatial_join
+from app.analysis.spatial_ops import (
+    clip_layer,
+    compute_geometry_stats,
+    merge_layers,
+    spatial_join,
+)
 from app.models.schemas import (
     ConversionResult,
+    GeometryStatsResult,
     ParseResult,
     RepairReport,
     TopologyReport,
@@ -328,6 +334,17 @@ async def analyze_spatial_join_upload(
         filename="spatial_join.geojson",
         background=background_tasks,
     )
+
+
+@app.post("/analyze/stats", response_model=GeometryStatsResult)
+async def analyze_stats_upload(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+) -> GeometryStatsResult:
+    """Return geometry measurements for an uploaded spatial layer."""
+    workspace = _background_workspace(background_tasks)
+    frame = await _load_uploaded_spatial_file(file, workspace, "stats")
+    return GeometryStatsResult(**compute_geometry_stats(frame))
 
 
 @app.post("/validate/geojson", response_model=ValidationReport)
