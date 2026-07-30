@@ -86,3 +86,43 @@ class TopologyReport(BaseModel):
     severity_counts: dict[str, int]
     highest_severity: Literal["none", "low", "medium", "high"]
     issues: list[TopologyIssue]
+
+
+class ClipRequest(BaseModel):
+    """Options for clipping an input layer."""
+
+    output_format: Literal["geojson"] = "geojson"
+
+
+class MergeRequest(BaseModel):
+    """Options for merging compatible layers."""
+
+    output_format: Literal["geojson"] = "geojson"
+
+
+class SpatialJoinRequest(BaseModel):
+    """Options for a spatial join operation."""
+
+    predicate: Literal["intersects", "within", "contains"]
+    output_format: Literal["geojson"] = "geojson"
+
+
+class GeometryFeatureStats(BaseModel):
+    """Measurements for one feature geometry."""
+
+    feature_index: int | str
+    area: float = Field(ge=0)
+    perimeter: float = Field(ge=0)
+    centroid: dict[str, float] | None
+    vertex_count: int = Field(ge=0)
+
+
+class GeometryStatsResult(BaseModel):
+    """Per-feature geometry measurements and dataset totals."""
+
+    feature_count: int = Field(ge=0)
+    crs: str | None = None
+    features: list[GeometryFeatureStats]
+    total_area: float = Field(ge=0)
+    total_perimeter: float = Field(ge=0)
+    total_vertices: int = Field(ge=0)
