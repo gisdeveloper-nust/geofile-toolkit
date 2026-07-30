@@ -232,6 +232,90 @@ curl -X POST "http://127.0.0.1:8000/batch/process" \
   -F "operation=parse"
 ```
 
+## Spatial Operations
+
+The `/analyze/*` endpoints accept supported spatial uploads, including
+Shapefile ZIP archives. Analysis downloads use GeoJSON so results can be opened
+directly by GIS software or passed into another GeoFile Toolkit operation.
+
+### Check polygon topology
+
+`POST /analyze/topology` detects polygon overlaps, coverage gaps, and small
+sliver features. The JSON report includes issue counts, severity totals, and
+feature references.
+
+```bash
+curl -X POST "http://127.0.0.1:8000/analyze/topology" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@path/to/parcels.geojson"
+```
+
+Use topology analysis before publishing administrative boundaries, parcels,
+or other polygon coverages where shared edges should not overlap or leave
+gaps.
+
+### Clip a layer
+
+`POST /analyze/clip` limits input features to a boundary layer and downloads
+the result as `clipped.geojson`.
+
+```bash
+curl -X POST "http://127.0.0.1:8000/analyze/clip" \
+  -H "Content-Type: multipart/form-data" \
+  -F "input_file=@path/to/roads.geojson" \
+  -F "clip_file=@path/to/study-area.geojson" \
+  -o clipped.geojson
+```
+
+Clipping is useful for extracting data inside a project area, municipality,
+watershed, or other region of interest.
+
+### Merge layers
+
+`POST /analyze/merge` combines two or more layers. Inputs with different CRS
+definitions are reprojected to the first layer's CRS before merging.
+
+```bash
+curl -X POST "http://127.0.0.1:8000/analyze/merge" \
+  -H "Content-Type: multipart/form-data" \
+  -F "files=@path/to/north.geojson" \
+  -F "files=@path/to/south.geojson" \
+  -o merged.geojson
+```
+
+Use merge to combine tiled, regional, or periodically collected datasets into
+one layer.
+
+### Spatial join
+
+`POST /analyze/spatial-join` transfers attributes between two layers using
+`intersects`, `within`, or `contains`.
+
+```bash
+curl -X POST "http://127.0.0.1:8000/analyze/spatial-join" \
+  -H "Content-Type: multipart/form-data" \
+  -F "left_file=@path/to/points.geojson" \
+  -F "right_file=@path/to/districts.geojson" \
+  -F "predicate=within" \
+  -o spatial_join.geojson
+```
+
+Spatial joins can assign points to districts, find intersecting assets, or
+associate containing polygons with smaller features.
+
+### Geometry statistics
+
+`POST /analyze/stats` returns per-feature area, perimeter, centroid, and vertex
+count plus dataset totals. Measurements use the uploaded layer's CRS units.
+
+```bash
+curl -X POST "http://127.0.0.1:8000/analyze/stats" \
+  -H "Content-Type: multipart/form-data" \
+  -F "file=@path/to/features.geojson"
+```
+
+Use a projected CRS when metric area or length values are required.
+
 Run the automated tests with:
 
 ```bash
@@ -247,3 +331,5 @@ python -m pytest
 - [x] GPX parser
 - [x] CSV latitude/longitude parser
 - [x] Mixed-file batch processing
+- [x] Polygon topology validation
+- [x] Spatial analysis operations
