@@ -23,6 +23,7 @@ from pyproj.exceptions import CRSError
 from app.converters.base_converter import load_any
 from app.converters.format_converter import convert
 from app.analysis.topology_checker import summarize_topology_issues
+from app.analysis.spatial_ops import clip_layer
 from app.models.schemas import (
     ConversionResult,
     ParseResult,
@@ -235,6 +236,35 @@ async def analyze_topology_upload(
         return summarize_topology_issues(frame)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/analyze/clip")
+async def analyze_clip_upload(
+    background_tasks: BackgroundTasks,
+    input_file: UploadFile = File(...),
+    clip_file: UploadFile = File(...),
+) -> FileResponse:
+    """Clip an uploaded layer and return downloadable GeoJSON."""
+    workspace = _background_workspace(background_tasks)
+    input_frame = await _load_uploaded_spatial_file(
+        input_file, workspace, "clip-input"
+    )
+    clip_frame = await _load_uploaded_spatial_file(
+        clip_file, workspace, "clip-boundary"
+    )
+    try:
+        clipped = clip_layer(input_frame, clip_frame)
+        output_path = workspace / "clipped.geojson"
+        convert(clipped, "geojson", str(output_path))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Clip failed: {exc}") from exc
+
+    return FileResponse(
+        path=output_path,
+        media_type="application/geo+json",
+        filename="clipped.geojson",
+        background=background_tasks,
+    )
 
 
 @app.post("/validate/geojson", response_model=ValidationReport)
