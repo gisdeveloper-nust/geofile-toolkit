@@ -23,7 +23,7 @@ from pyproj.exceptions import CRSError
 from app.converters.base_converter import load_any
 from app.converters.format_converter import convert
 from app.analysis.topology_checker import summarize_topology_issues
-from app.analysis.spatial_ops import clip_layer, merge_layers
+from app.analysis.spatial_ops import clip_layer, merge_layers, spatial_join
 from app.models.schemas import (
     ConversionResult,
     ParseResult,
@@ -294,6 +294,38 @@ async def analyze_merge_upload(
         path=output_path,
         media_type="application/geo+json",
         filename="merged.geojson",
+        background=background_tasks,
+    )
+
+
+@app.post("/analyze/spatial-join")
+async def analyze_spatial_join_upload(
+    background_tasks: BackgroundTasks,
+    left_file: UploadFile = File(...),
+    right_file: UploadFile = File(...),
+    predicate: str = Form(...),
+) -> FileResponse:
+    """Spatially join two uploaded layers and return downloadable GeoJSON."""
+    workspace = _background_workspace(background_tasks)
+    left_frame = await _load_uploaded_spatial_file(
+        left_file, workspace, "join-left"
+    )
+    right_frame = await _load_uploaded_spatial_file(
+        right_file, workspace, "join-right"
+    )
+    try:
+        joined = spatial_join(left_frame, right_frame, predicate)
+        output_path = workspace / "spatial_join.geojson"
+        convert(joined, "geojson", str(output_path))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422, detail=f"Spatial join failed: {exc}"
+        ) from exc
+
+    return FileResponse(
+        path=output_path,
+        media_type="application/geo+json",
+        filename="spatial_join.geojson",
         background=background_tasks,
     )
 
