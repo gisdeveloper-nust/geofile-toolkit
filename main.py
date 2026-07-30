@@ -23,7 +23,7 @@ from pyproj.exceptions import CRSError
 from app.converters.base_converter import load_any
 from app.converters.format_converter import convert
 from app.analysis.topology_checker import summarize_topology_issues
-from app.analysis.spatial_ops import clip_layer
+from app.analysis.spatial_ops import clip_layer, merge_layers
 from app.models.schemas import (
     ConversionResult,
     ParseResult,
@@ -263,6 +263,37 @@ async def analyze_clip_upload(
         path=output_path,
         media_type="application/geo+json",
         filename="clipped.geojson",
+        background=background_tasks,
+    )
+
+
+@app.post("/analyze/merge")
+async def analyze_merge_upload(
+    background_tasks: BackgroundTasks,
+    files: list[UploadFile] = File(...),
+) -> FileResponse:
+    """Merge uploaded layers and return downloadable GeoJSON."""
+    if len(files) < 2:
+        raise HTTPException(
+            status_code=400, detail="Upload at least two layers to merge"
+        )
+
+    workspace = _background_workspace(background_tasks)
+    frames = [
+        await _load_uploaded_spatial_file(file, workspace, f"merge-{index}")
+        for index, file in enumerate(files)
+    ]
+    try:
+        merged = merge_layers(frames)
+        output_path = workspace / "merged.geojson"
+        convert(merged, "geojson", str(output_path))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail=f"Merge failed: {exc}") from exc
+
+    return FileResponse(
+        path=output_path,
+        media_type="application/geo+json",
+        filename="merged.geojson",
         background=background_tasks,
     )
 
