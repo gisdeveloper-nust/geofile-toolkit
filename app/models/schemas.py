@@ -63,3 +63,26 @@ class ConversionResult(BaseModel):
     target_format: str
     target_crs: str | None = None
     output_filename: str
+
+
+class TopologyIssue(BaseModel):
+    """One polygon topology defect."""
+
+    issue_type: Literal["overlap", "gap", "sliver"]
+    feature_indices: list[int | str]
+    area: float = Field(ge=0)
+    severity: Literal["low", "medium", "high"]
+    description: str
+
+
+class TopologyReport(BaseModel):
+    """Aggregate polygon topology analysis."""
+
+    feature_count: int = Field(ge=0)
+    issue_count: int = Field(ge=0)
+    overlap_count: int = Field(ge=0)
+    gap_count: int = Field(ge=0)
+    sliver_count: int = Field(ge=0)
+    severity_counts: dict[str, int]
+    highest_severity: Literal["none", "low", "medium", "high"]
+    issues: list[TopologyIssue]
