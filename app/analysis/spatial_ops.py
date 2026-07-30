@@ -2,6 +2,7 @@
 
 import geopandas as gpd
 import pandas as pd
+from shapely.geometry.base import BaseGeometry
 
 
 def clip_layer(
@@ -63,3 +64,68 @@ def spatial_join(
         how="inner",
         predicate=normalized_predicate,
     )
+
+
+def _ring_vertex_count(coordinates) -> int:
+    values = list(coordinates)
+    if len(values) > 1 and values[0] == values[-1]:
+        return len(values) - 1
+    return len(values)
+
+
+def _vertex_count(geometry: BaseGeometry | None) -> int:
+    if geometry is None or geometry.is_empty:
+        return 0
+    if geometry.geom_type == "Polygon":
+        return _ring_vertex_count(geometry.exterior.coords) + sum(
+            _ring_vertex_count(ring.coords) for ring in geometry.interiors
+        )
+    if hasattr(geometry, "geoms"):
+        return sum(_vertex_count(part) for part in geometry.geoms)
+    if hasattr(geometry, "coords"):
+        return len(geometry.coords)
+    return 0
+
+
+def compute_geometry_stats(gdf: gpd.GeoDataFrame) -> dict:
+    """Return per-feature and dataset-level geometry measurements."""
+    features: list[dict] = []
+    total_area = 0.0
+    total_perimeter = 0.0
+    total_vertices = 0
+
+    for feature_index, geometry in gdf.geometry.items():
+        area = float(geometry.area) if geometry is not None else 0.0
+        perimeter = float(geometry.length) if geometry is not None else 0.0
+        vertex_count = _vertex_count(geometry)
+        centroid = (
+            {"x": float(geometry.centroid.x), "y": float(geometry.centroid.y)}
+            if geometry is not None and not geometry.is_empty
+            else None
+        )
+        native_index = (
+            feature_index.item()
+            if hasattr(feature_index, "item")
+            else feature_index
+        )
+        features.append(
+            {
+                "feature_index": native_index,
+                "area": area,
+                "perimeter": perimeter,
+                "centroid": centroid,
+                "vertex_count": vertex_count,
+            }
+        )
+        total_area += area
+        total_perimeter += perimeter
+        total_vertices += vertex_count
+
+    return {
+        "feature_count": len(gdf),
+        "crs": gdf.crs.to_string() if gdf.crs else None,
+        "features": features,
+        "total_area": total_area,
+        "total_perimeter": total_perimeter,
+        "total_vertices": total_vertices,
+    }
