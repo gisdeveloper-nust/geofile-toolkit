@@ -22,10 +22,12 @@ from pyproj.exceptions import CRSError
 
 from app.converters.base_converter import load_any
 from app.converters.format_converter import convert
+from app.analysis.topology_checker import summarize_topology_issues
 from app.models.schemas import (
     ConversionResult,
     ParseResult,
     RepairReport,
+    TopologyReport,
     ValidationReport,
 )
 from app.parsers.csv_parser import CSVParseError, parse_csv
@@ -60,6 +62,40 @@ def _background_workspace(background_tasks: BackgroundTasks) -> Path:
     workspace = Path(mkdtemp(prefix="geofile-toolkit-"))
     background_tasks.add_task(cleanup_temp_files, workspace)
     return workspace
+
+
+async def _load_uploaded_spatial_file(
+    file: UploadFile,
+    workspace: Path,
+    prefix: str,
+) -> gpd.GeoDataFrame:
+    upload_directory = workspace / prefix
+    upload_directory.mkdir(parents=True, exist_ok=True)
+    filename = Path(file.filename or "upload").name
+    upload_path = upload_directory / filename
+    upload_path.write_bytes(await file.read())
+
+    source_path = upload_path
+    if upload_path.suffix.lower() == ".zip":
+        try:
+            with ZipFile(upload_path) as archive:
+                _extract_zip_safely(archive, upload_directory)
+        except BadZipFile as exc:
+            raise HTTPException(status_code=400, detail="Invalid ZIP archive") from exc
+        shapefiles = list(upload_directory.rglob("*.shp"))
+        if len(shapefiles) != 1:
+            raise HTTPException(
+                status_code=400,
+                detail="A Shapefile ZIP must contain exactly one .shp file",
+            )
+        source_path = shapefiles[0]
+
+    try:
+        return load_any(str(source_path))
+    except (OSError, ValueError) as exc:
+        raise HTTPException(
+            status_code=422, detail=f"Unable to load spatial file: {exc}"
+        ) from exc
 
 
 @app.post("/parse/shapefile", response_model=ParseResult)
@@ -184,6 +220,20 @@ async def parse_csv_upload(
     try:
         return parse_csv(str(upload_path), lat_col=lat_col, lon_col=lon_col)
     except CSVParseError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@app.post("/analyze/topology", response_model=TopologyReport)
+async def analyze_topology_upload(
+    background_tasks: BackgroundTasks,
+    file: UploadFile = File(...),
+) -> TopologyReport:
+    """Analyze polygon overlaps, gaps, and slivers in an uploaded layer."""
+    workspace = _background_workspace(background_tasks)
+    frame = await _load_uploaded_spatial_file(file, workspace, "topology")
+    try:
+        return summarize_topology_issues(frame)
+    except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
