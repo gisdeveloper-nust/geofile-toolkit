@@ -1,10 +1,15 @@
 """Polygon topology checks using Shapely and GeoPandas spatial indexes."""
 
-from typing import Any
+from __future__ import annotations
+
+from typing import TYPE_CHECKING, Any, cast
 
 import geopandas as gpd
 from shapely import union_all
 from shapely.geometry import MultiPolygon, Polygon
+
+if TYPE_CHECKING:
+    from app.models.schemas import TopologyReport
 
 
 def _native_index(value: Any) -> int | str:
@@ -113,3 +118,29 @@ def check_topology(gdf: gpd.GeoDataFrame) -> dict[str, Any]:
         "gap_count": sum(issue["issue_type"] == "gap" for issue in issues),
         "sliver_count": sum(issue["issue_type"] == "sliver" for issue in issues),
     }
+
+
+def summarize_topology_issues(gdf: gpd.GeoDataFrame) -> TopologyReport:
+    """Aggregate topology issue counts and severity into a report."""
+    topology = check_topology(gdf)
+    severity_counts = {
+        severity: sum(
+            issue["severity"] == severity for issue in topology["issues"]
+        )
+        for severity in ("low", "medium", "high")
+    }
+    highest_severity = next(
+        (
+            severity
+            for severity in ("high", "medium", "low")
+            if severity_counts[severity]
+        ),
+        "none",
+    )
+    report = {
+        **topology,
+        "issue_count": len(topology["issues"]),
+        "severity_counts": severity_counts,
+        "highest_severity": highest_severity,
+    }
+    return cast("TopologyReport", report)
