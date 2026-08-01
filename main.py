@@ -29,6 +29,7 @@ from slowapi.errors import RateLimitExceeded
 from app.middleware.rate_limiter import RATE_LIMIT_STRING, limiter
 from app.auth.api_key import generate_key
 from app.auth.dependencies import verify_api_key
+from app.jobs.job_queue import get_job, submit_job
 from app.converters.base_converter import load_any
 from app.converters.format_converter import convert
 from app.analysis.topology_checker import summarize_topology_issues
@@ -92,6 +93,27 @@ def create_api_key(body: KeyGenerateRequest = KeyGenerateRequest()) -> KeyGenera
     """Generate a new API key and return it.  Store it securely — it will not be shown again."""
     record = generate_key(label=body.label)
     return KeyGenerateResponse(**record)
+
+
+# ---------------------------------------------------------------------------
+# Job status endpoint (authenticated)
+# ---------------------------------------------------------------------------
+
+
+@app.get("/jobs/{job_id}", dependencies=_AUTH_DEP)
+def get_job_status(job_id: str) -> dict:
+    """Return the current status and result of an async job.
+
+    Status values: ``pending`` | ``processing`` | ``complete`` | ``failed``
+
+    When ``status`` is ``complete`` the ``result`` field contains the
+    job's output.  When ``status`` is ``failed`` the ``error`` field
+    describes what went wrong.
+    """
+    record = get_job(job_id)
+    if record is None:
+        raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
+    return record.to_dict()
 
 
 @app.get("/health")
@@ -488,7 +510,7 @@ async def repair_geojson_upload(request: Request, file: UploadFile = File(...)) 
     )
 
 
-@app.post("/convert", dependencies=_AUTH_DEP)
+@app.post("/convert", dependencies=_AUTH_DEP, response_model=None)
 @limiter.limit(RATE_LIMIT_STRING)
 async def convert_upload(
     request: Request,
@@ -496,150 +518,224 @@ async def convert_upload(
     file: UploadFile = File(...),
     target_format: str = Form(...),
     target_crs: str | None = Form(None),
-) -> FileResponse:
-    """Convert an uploaded geospatial file and return it as a download."""
+    async_mode: bool = Query(False, alias="async"),
+) -> FileResponse | dict:
+    """Convert an uploaded geospatial file and return it as a download.
+
+    Pass ``?async=true`` to receive a ``{"job_id": "..."}`` immediately and
+    poll ``GET /jobs/{job_id}`` for completion.
+    """
     filename = Path(file.filename or "upload").name
-    workspace = _background_workspace(background_tasks)
-    try:
-        upload_path = workspace / filename
-        upload_path.write_bytes(await file.read())
 
-        source_path = upload_path
-        source_formats = {
-            ".shp": "shapefile",
-            ".geojson": "geojson",
-            ".json": "geojson",
-            ".kml": "kml",
-        }
-        source_format = source_formats.get(upload_path.suffix.lower())
-        if upload_path.suffix.lower() == ".zip":
-            try:
-                with ZipFile(upload_path) as archive:
-                    _extract_zip_safely(archive, workspace)
-            except BadZipFile as exc:
-                raise HTTPException(status_code=400, detail="Invalid ZIP archive") from exc
-            shapefiles = list(workspace.rglob("*.shp"))
-            if len(shapefiles) != 1:
-                raise HTTPException(
-                    status_code=400,
-                    detail="A Shapefile ZIP must contain exactly one .shp file",
-                )
-            source_path = shapefiles[0]
-            source_format = "shapefile"
-
-        if source_format is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Unsupported source format; upload Shapefile ZIP, GeoJSON, or KML",
-            )
-
-        target_aliases = {
-            "shapefile": "shapefile",
-            "shp": "shapefile",
-            "geojson": "geojson",
-            "json": "geojson",
-            "kml": "kml",
-        }
-        normalized_target = target_aliases.get(target_format.strip().lower())
-        if normalized_target is None:
-            raise HTTPException(
-                status_code=400,
-                detail="Unsupported target format; use shapefile, geojson, or kml",
-            )
-        if source_format == normalized_target:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Unsupported format combination: {source_format} to {normalized_target}",
-            )
-
-        effective_target_crs = target_crs
-        if target_crs:
-            try:
-                parsed_target_crs = CRS.from_user_input(target_crs)
-            except CRSError as exc:
-                raise HTTPException(
-                    status_code=400, detail=f"Unsupported CRS code: {target_crs}"
-                ) from exc
-            if normalized_target == "kml" and parsed_target_crs != CRS.from_epsg(4326):
-                raise HTTPException(
-                    status_code=400,
-                    detail="KML output supports only EPSG:4326",
-                )
-        elif normalized_target == "kml":
-            effective_target_crs = "EPSG:4326"
-
-        extensions = {
-            "shapefile": ".shp",
-            "geojson": ".geojson",
-            "kml": ".kml",
-        }
-        output_path = workspace / f"{source_path.stem}_converted{extensions[normalized_target]}"
-        try:
-            frame = load_any(str(source_path))
-            convert(
-                frame,
-                normalized_target,
-                str(output_path),
-                effective_target_crs,
-            )
-        except (OSError, ValueError) as exc:
-            raise HTTPException(status_code=422, detail=f"Conversion failed: {exc}") from exc
-
-        download_path = output_path
-        media_type = {
-            ".geojson": "application/geo+json",
-            ".kml": "application/vnd.google-earth.kml+xml",
-        }.get(output_path.suffix, "application/octet-stream")
-        if normalized_target == "shapefile":
-            download_path = workspace / f"{source_path.stem}_converted.zip"
-            with ZipFile(download_path, mode="w") as archive:
-                for component in output_path.parent.glob(f"{output_path.stem}.*"):
-                    archive.write(component, arcname=component.name)
-            media_type = "application/zip"
-
-        result = ConversionResult(
-            original_filename=filename,
-            source_format=source_format,
-            target_format=normalized_target,
-            target_crs=effective_target_crs,
-            output_filename=download_path.name,
+    # Validate format params eagerly before any expensive I/O so that
+    # format errors are returned synchronously even in async mode.
+    source_formats = {
+        ".shp": "shapefile",
+        ".geojson": "geojson",
+        ".json": "geojson",
+        ".kml": "kml",
+    }
+    file_suffix = Path(filename).suffix.lower()
+    source_format_hint = source_formats.get(file_suffix)
+    if file_suffix not in {".zip"} and source_format_hint is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported source format; upload Shapefile ZIP, GeoJSON, or KML",
         )
-        encoded_result = base64.urlsafe_b64encode(
-            result.model_dump_json().encode("utf-8")
-        ).decode("ascii")
-    except Exception:
+
+    target_aliases = {
+        "shapefile": "shapefile",
+        "shp": "shapefile",
+        "geojson": "geojson",
+        "json": "geojson",
+        "kml": "kml",
+    }
+    normalized_target = target_aliases.get(target_format.strip().lower())
+    if normalized_target is None:
+        raise HTTPException(
+            status_code=400,
+            detail="Unsupported target format; use shapefile, geojson, or kml",
+        )
+
+    effective_target_crs = target_crs
+    if target_crs:
+        try:
+            parsed_target_crs = CRS.from_user_input(target_crs)
+        except CRSError as exc:
+            raise HTTPException(
+                status_code=400, detail=f"Unsupported CRS code: {target_crs}"
+            ) from exc
+        if normalized_target == "kml" and parsed_target_crs != CRS.from_epsg(4326):
+            raise HTTPException(
+                status_code=400,
+                detail="KML output supports only EPSG:4326",
+            )
+    elif normalized_target == "kml":
+        effective_target_crs = "EPSG:4326"
+
+    # Read file bytes once; the rest can run in the background.
+    file_bytes = await file.read()
+    workspace = Path(mkdtemp(prefix="geofile-toolkit-"))
+
+    if async_mode:
+        job_id = submit_job(
+            _sync_convert,
+            workspace,
+            filename,
+            file_bytes,
+            normalized_target,
+            effective_target_crs,
+        )
+        return {"job_id": job_id}
+
+    # Synchronous path — keep existing behaviour.
+    background_tasks.add_task(cleanup_temp_files, workspace)
+    try:
+        result_dict = _sync_convert(
+            workspace, filename, file_bytes, normalized_target, effective_target_crs
+        )
+    except HTTPException:
         cleanup_temp_files(workspace)
         raise
+    except Exception as exc:
+        cleanup_temp_files(workspace)
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
+    download_path = Path(result_dict["download_path"])
     return FileResponse(
         path=download_path,
-        media_type=media_type,
+        media_type=result_dict["media_type"],
         filename=download_path.name,
         headers={
-            "X-Conversion-Result": encoded_result,
+            "X-Conversion-Result": result_dict["encoded_result"],
             "X-Conversion-Result-Encoding": "base64url",
         },
         background=background_tasks,
     )
 
 
-@app.post("/batch/process", dependencies=_AUTH_DEP)
+def _sync_convert(
+    workspace: Path,
+    filename: str,
+    file_bytes: bytes,
+    normalized_target: str,
+    effective_target_crs: str | None,
+) -> dict:
+    """Blocking conversion logic, safe to run in a thread-pool worker."""
+    upload_path = workspace / filename
+    upload_path.write_bytes(file_bytes)
+
+    source_path = upload_path
+    source_formats = {
+        ".shp": "shapefile",
+        ".geojson": "geojson",
+        ".json": "geojson",
+        ".kml": "kml",
+    }
+    source_format = source_formats.get(upload_path.suffix.lower())
+    if upload_path.suffix.lower() == ".zip":
+        with ZipFile(upload_path) as archive:
+            _extract_zip_safely_sync(archive, workspace)
+        shapefiles = list(workspace.rglob("*.shp"))
+        if len(shapefiles) != 1:
+            raise ValueError(
+                "A Shapefile ZIP must contain exactly one .shp file"
+            )
+        source_path = shapefiles[0]
+        source_format = "shapefile"
+
+    if source_format is None:
+        raise ValueError("Unsupported source format")
+    if source_format == normalized_target:
+        raise ValueError(
+            f"Unsupported format combination: {source_format} to {normalized_target}"
+        )
+
+    extensions = {"shapefile": ".shp", "geojson": ".geojson", "kml": ".kml"}
+    output_path = workspace / f"{source_path.stem}_converted{extensions[normalized_target]}"
+
+    frame = load_any(str(source_path))
+    convert(frame, normalized_target, str(output_path), effective_target_crs)
+
+    download_path = output_path
+    media_type = {
+        ".geojson": "application/geo+json",
+        ".kml": "application/vnd.google-earth.kml+xml",
+    }.get(output_path.suffix, "application/octet-stream")
+    if normalized_target == "shapefile":
+        download_path = workspace / f"{source_path.stem}_converted.zip"
+        with ZipFile(download_path, mode="w") as archive:
+            for component in output_path.parent.glob(f"{output_path.stem}.*"):
+                archive.write(component, arcname=component.name)
+        media_type = "application/zip"
+
+    result_meta = ConversionResult(
+        original_filename=filename,
+        source_format=source_format,
+        target_format=normalized_target,
+        target_crs=effective_target_crs,
+        output_filename=download_path.name,
+    )
+    encoded_result = base64.urlsafe_b64encode(
+        result_meta.model_dump_json().encode("utf-8")
+    ).decode("ascii")
+
+    return {
+        "download_path": str(download_path),
+        "media_type": media_type,
+        "encoded_result": encoded_result,
+    }
+
+
+def _extract_zip_safely_sync(archive: ZipFile, destination: Path) -> None:
+    """Zip-slip-safe extraction (sync version for thread workers)."""
+    destination_root = destination.resolve()
+    for member in archive.infolist():
+        member_path = (destination / member.filename).resolve()
+        if destination_root not in member_path.parents and member_path != destination_root:
+            raise ValueError("Archive contains an unsafe path")
+    archive.extractall(destination)
+
+
+@app.post("/batch/process", dependencies=_AUTH_DEP, response_model=None)
 @limiter.limit(RATE_LIMIT_STRING)
 async def batch_process_upload(
     request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     operation: str = Form(...),
-) -> list[dict]:
-    """Process mixed spatial files from an uploaded ZIP archive."""
+    async_mode: bool = Query(False, alias="async"),
+) -> list[dict] | dict:
+    """Process mixed spatial files from an uploaded ZIP archive.
+
+    Pass ``?async=true`` to receive ``{"job_id": "..."}`` immediately and
+    poll ``GET /jobs/{job_id}`` for completion.
+    """
     filename = file.filename or ""
     if Path(filename).suffix.lower() != ".zip":
         raise HTTPException(status_code=400, detail="Upload must be a ZIP archive")
 
-    workspace = _background_workspace(background_tasks)
+    file_bytes = await file.read()
+    workspace = Path(mkdtemp(prefix="geofile-toolkit-"))
     upload_path = workspace / Path(filename).name
-    upload_path.write_bytes(await file.read())
+    upload_path.write_bytes(file_bytes)
+
+    def _sync_batch() -> list[dict]:
+        try:
+            return process_zip(str(upload_path), operation)
+        except ValueError as exc:
+            raise ValueError(str(exc)) from exc
+        finally:
+            # Cleanup only when the job itself owns the workspace.
+            if async_mode:
+                cleanup_temp_files(workspace)
+
+    if async_mode:
+        job_id = submit_job(_sync_batch)
+        return {"job_id": job_id}
+
+    background_tasks.add_task(cleanup_temp_files, workspace)
     try:
-        return process_zip(str(upload_path), operation)
+        return _sync_batch()
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
