@@ -8,6 +8,7 @@ from zipfile import BadZipFile, ZipFile
 import geopandas as gpd
 from fastapi import (
     BackgroundTasks,
+    Depends,
     FastAPI,
     File,
     Form,
@@ -17,9 +18,12 @@ from fastapi import (
     UploadFile,
 )
 from fastapi.responses import FileResponse
+from pydantic import BaseModel
 from pyproj import CRS
 from pyproj.exceptions import CRSError
 
+from app.auth.api_key import generate_key
+from app.auth.dependencies import verify_api_key
 from app.converters.base_converter import load_any
 from app.converters.format_converter import convert
 from app.analysis.topology_checker import summarize_topology_issues
@@ -48,6 +52,39 @@ from app.utils.file_cleanup import cleanup_temp_files
 from app.validators.geometry_validator import detect_geometry_issues
 
 app = FastAPI(title="GeoFile Toolkit")
+
+_AUTH_DEP = [Depends(verify_api_key)]
+
+
+# ---------------------------------------------------------------------------
+# Auth schemas
+# ---------------------------------------------------------------------------
+
+
+class KeyGenerateRequest(BaseModel):
+    """Optional label to attach to the generated API key."""
+
+    label: str = ""
+
+
+class KeyGenerateResponse(BaseModel):
+    """Newly generated API key and metadata."""
+
+    key: str
+    label: str
+    created_at: str
+
+
+# ---------------------------------------------------------------------------
+# Auth endpoint (public — no key required to create the first key)
+# ---------------------------------------------------------------------------
+
+
+@app.post("/auth/keys", response_model=KeyGenerateResponse, status_code=201)
+def create_api_key(body: KeyGenerateRequest = KeyGenerateRequest()) -> KeyGenerateResponse:
+    """Generate a new API key and return it.  Store it securely — it will not be shown again."""
+    record = generate_key(label=body.label)
+    return KeyGenerateResponse(**record)
 
 
 @app.get("/health")
@@ -105,7 +142,7 @@ async def _load_uploaded_spatial_file(
         ) from exc
 
 
-@app.post("/parse/shapefile", response_model=ParseResult)
+@app.post("/parse/shapefile", response_model=ParseResult, dependencies=_AUTH_DEP)
 async def parse_shapefile_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -146,7 +183,7 @@ async def parse_shapefile_upload(
     return ParseResult(**result)
 
 
-@app.post("/parse/geojson", response_model=ParseResult)
+@app.post("/parse/geojson", response_model=ParseResult, dependencies=_AUTH_DEP)
 async def parse_geojson_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -169,7 +206,7 @@ async def parse_geojson_upload(
     return ParseResult(**result)
 
 
-@app.post("/parse/kml", response_model=ParseResult)
+@app.post("/parse/kml", response_model=ParseResult, dependencies=_AUTH_DEP)
 async def parse_kml_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -190,7 +227,7 @@ async def parse_kml_upload(
     return ParseResult(**result)
 
 
-@app.post("/parse/gpx")
+@app.post("/parse/gpx", dependencies=_AUTH_DEP)
 async def parse_gpx_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -209,7 +246,7 @@ async def parse_gpx_upload(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@app.post("/parse/csv")
+@app.post("/parse/csv", dependencies=_AUTH_DEP)
 async def parse_csv_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -230,7 +267,7 @@ async def parse_csv_upload(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@app.post("/analyze/topology", response_model=TopologyReport)
+@app.post("/analyze/topology", response_model=TopologyReport, dependencies=_AUTH_DEP)
 async def analyze_topology_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -244,7 +281,7 @@ async def analyze_topology_upload(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@app.post("/analyze/clip")
+@app.post("/analyze/clip", dependencies=_AUTH_DEP)
 async def analyze_clip_upload(
     background_tasks: BackgroundTasks,
     input_file: UploadFile = File(...),
@@ -273,7 +310,7 @@ async def analyze_clip_upload(
     )
 
 
-@app.post("/analyze/merge")
+@app.post("/analyze/merge", dependencies=_AUTH_DEP)
 async def analyze_merge_upload(
     background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
@@ -304,7 +341,7 @@ async def analyze_merge_upload(
     )
 
 
-@app.post("/analyze/spatial-join")
+@app.post("/analyze/spatial-join", dependencies=_AUTH_DEP)
 async def analyze_spatial_join_upload(
     background_tasks: BackgroundTasks,
     left_file: UploadFile = File(...),
@@ -336,7 +373,7 @@ async def analyze_spatial_join_upload(
     )
 
 
-@app.post("/analyze/stats", response_model=GeometryStatsResult)
+@app.post("/analyze/stats", response_model=GeometryStatsResult, dependencies=_AUTH_DEP)
 async def analyze_stats_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -347,7 +384,7 @@ async def analyze_stats_upload(
     return GeometryStatsResult(**compute_geometry_stats(frame))
 
 
-@app.post("/validate/geojson", response_model=ValidationReport)
+@app.post("/validate/geojson", response_model=ValidationReport, dependencies=_AUTH_DEP)
 async def validate_geojson_upload(
     file: UploadFile = File(...),
 ) -> ValidationReport:
@@ -378,7 +415,7 @@ async def validate_geojson_upload(
     )
 
 
-@app.post("/repair/geojson")
+@app.post("/repair/geojson", dependencies=_AUTH_DEP)
 async def repair_geojson_upload(file: UploadFile = File(...)) -> Response:
     """Repair GeoJSON geometries and return a downloadable repaired document."""
     filename = file.filename or ""
@@ -421,7 +458,7 @@ async def repair_geojson_upload(file: UploadFile = File(...)) -> Response:
     )
 
 
-@app.post("/convert")
+@app.post("/convert", dependencies=_AUTH_DEP)
 async def convert_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
@@ -554,7 +591,7 @@ async def convert_upload(
     )
 
 
-@app.post("/batch/process")
+@app.post("/batch/process", dependencies=_AUTH_DEP)
 async def batch_process_upload(
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
