@@ -14,6 +14,7 @@ from fastapi import (
     Form,
     HTTPException,
     Query,
+    Request,
     Response,
     UploadFile,
 )
@@ -22,6 +23,10 @@ from pydantic import BaseModel
 from pyproj import CRS
 from pyproj.exceptions import CRSError
 
+from slowapi import _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
+
+from app.middleware.rate_limiter import RATE_LIMIT_STRING, limiter
 from app.auth.api_key import generate_key
 from app.auth.dependencies import verify_api_key
 from app.converters.base_converter import load_any
@@ -52,6 +57,8 @@ from app.utils.file_cleanup import cleanup_temp_files
 from app.validators.geometry_validator import detect_geometry_issues
 
 app = FastAPI(title="GeoFile Toolkit")
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 _AUTH_DEP = [Depends(verify_api_key)]
 
@@ -143,7 +150,9 @@ async def _load_uploaded_spatial_file(
 
 
 @app.post("/parse/shapefile", response_model=ParseResult, dependencies=_AUTH_DEP)
+@limiter.limit(RATE_LIMIT_STRING)
 async def parse_shapefile_upload(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
 ) -> ParseResult:
@@ -184,7 +193,9 @@ async def parse_shapefile_upload(
 
 
 @app.post("/parse/geojson", response_model=ParseResult, dependencies=_AUTH_DEP)
+@limiter.limit(RATE_LIMIT_STRING)
 async def parse_geojson_upload(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
 ) -> ParseResult:
@@ -207,7 +218,9 @@ async def parse_geojson_upload(
 
 
 @app.post("/parse/kml", response_model=ParseResult, dependencies=_AUTH_DEP)
+@limiter.limit(RATE_LIMIT_STRING)
 async def parse_kml_upload(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
 ) -> ParseResult:
@@ -228,7 +241,9 @@ async def parse_kml_upload(
 
 
 @app.post("/parse/gpx", dependencies=_AUTH_DEP)
+@limiter.limit(RATE_LIMIT_STRING)
 async def parse_gpx_upload(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
 ) -> dict:
@@ -247,7 +262,9 @@ async def parse_gpx_upload(
 
 
 @app.post("/parse/csv", dependencies=_AUTH_DEP)
+@limiter.limit(RATE_LIMIT_STRING)
 async def parse_csv_upload(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     lat_col: str | None = Query(None),
@@ -268,7 +285,9 @@ async def parse_csv_upload(
 
 
 @app.post("/analyze/topology", response_model=TopologyReport, dependencies=_AUTH_DEP)
+@limiter.limit(RATE_LIMIT_STRING)
 async def analyze_topology_upload(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
 ) -> TopologyReport:
@@ -282,7 +301,9 @@ async def analyze_topology_upload(
 
 
 @app.post("/analyze/clip", dependencies=_AUTH_DEP)
+@limiter.limit(RATE_LIMIT_STRING)
 async def analyze_clip_upload(
+    request: Request,
     background_tasks: BackgroundTasks,
     input_file: UploadFile = File(...),
     clip_file: UploadFile = File(...),
@@ -311,7 +332,9 @@ async def analyze_clip_upload(
 
 
 @app.post("/analyze/merge", dependencies=_AUTH_DEP)
+@limiter.limit(RATE_LIMIT_STRING)
 async def analyze_merge_upload(
+    request: Request,
     background_tasks: BackgroundTasks,
     files: list[UploadFile] = File(...),
 ) -> FileResponse:
@@ -342,7 +365,9 @@ async def analyze_merge_upload(
 
 
 @app.post("/analyze/spatial-join", dependencies=_AUTH_DEP)
+@limiter.limit(RATE_LIMIT_STRING)
 async def analyze_spatial_join_upload(
+    request: Request,
     background_tasks: BackgroundTasks,
     left_file: UploadFile = File(...),
     right_file: UploadFile = File(...),
@@ -374,7 +399,9 @@ async def analyze_spatial_join_upload(
 
 
 @app.post("/analyze/stats", response_model=GeometryStatsResult, dependencies=_AUTH_DEP)
+@limiter.limit(RATE_LIMIT_STRING)
 async def analyze_stats_upload(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
 ) -> GeometryStatsResult:
@@ -385,7 +412,9 @@ async def analyze_stats_upload(
 
 
 @app.post("/validate/geojson", response_model=ValidationReport, dependencies=_AUTH_DEP)
+@limiter.limit(RATE_LIMIT_STRING)
 async def validate_geojson_upload(
+    request: Request,
     file: UploadFile = File(...),
 ) -> ValidationReport:
     """Validate every geometry in an uploaded GeoJSON document."""
@@ -416,7 +445,8 @@ async def validate_geojson_upload(
 
 
 @app.post("/repair/geojson", dependencies=_AUTH_DEP)
-async def repair_geojson_upload(file: UploadFile = File(...)) -> Response:
+@limiter.limit(RATE_LIMIT_STRING)
+async def repair_geojson_upload(request: Request, file: UploadFile = File(...)) -> Response:
     """Repair GeoJSON geometries and return a downloadable repaired document."""
     filename = file.filename or ""
     if Path(filename).suffix.lower() not in {".geojson", ".json"}:
@@ -459,7 +489,9 @@ async def repair_geojson_upload(file: UploadFile = File(...)) -> Response:
 
 
 @app.post("/convert", dependencies=_AUTH_DEP)
+@limiter.limit(RATE_LIMIT_STRING)
 async def convert_upload(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     target_format: str = Form(...),
@@ -592,7 +624,9 @@ async def convert_upload(
 
 
 @app.post("/batch/process", dependencies=_AUTH_DEP)
+@limiter.limit(RATE_LIMIT_STRING)
 async def batch_process_upload(
+    request: Request,
     background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     operation: str = Form(...),
