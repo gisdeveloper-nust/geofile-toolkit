@@ -1,6 +1,8 @@
 """GeoFile Toolkit application entry point."""
 
+import asyncio
 import base64
+from contextlib import asynccontextmanager
 from pathlib import Path
 from tempfile import TemporaryDirectory, mkdtemp
 from zipfile import BadZipFile, ZipFile
@@ -29,7 +31,8 @@ from slowapi.errors import RateLimitExceeded
 from app.middleware.rate_limiter import RATE_LIMIT_STRING, limiter
 from app.auth.api_key import generate_key
 from app.auth.dependencies import verify_api_key
-from app.jobs.job_queue import get_job, submit_job
+from app.jobs.cleanup import periodic_job_purge
+from app.jobs.job_queue import get_job, job_store_snapshot, purge_expired_jobs, submit_job
 from app.converters.base_converter import load_any
 from app.converters.format_converter import convert
 from app.analysis.topology_checker import summarize_topology_issues
@@ -57,7 +60,17 @@ from app.utils.batch_processor import process_zip
 from app.utils.file_cleanup import cleanup_temp_files
 from app.validators.geometry_validator import detect_geometry_issues
 
-app = FastAPI(title="GeoFile Toolkit")
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    """Start background tasks on app startup."""
+    purge_task = asyncio.create_task(periodic_job_purge())
+    try:
+        yield
+    finally:
+        purge_task.cancel()
+
+
+app = FastAPI(title="GeoFile Toolkit", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
@@ -114,6 +127,22 @@ def get_job_status(job_id: str) -> dict:
     if record is None:
         raise HTTPException(status_code=404, detail=f"Job '{job_id}' not found.")
     return record.to_dict()
+
+
+@app.get("/jobs", dependencies=_AUTH_DEP)
+def list_jobs() -> list[dict]:
+    """Return a snapshot of all jobs (pending, processing, complete, failed)."""
+    return job_store_snapshot()
+
+
+@app.delete("/jobs/expired", dependencies=_AUTH_DEP)
+def purge_jobs() -> dict:
+    """Manually trigger a purge of expired finished jobs.
+
+    Returns how many jobs were removed.
+    """
+    removed = purge_expired_jobs()
+    return {"purged": removed}
 
 
 @app.get("/health")
