@@ -5,6 +5,8 @@ from pathlib import Path
 import click
 
 from cli import __version__
+from app.converters.base_converter import load_any
+from app.converters.format_converter import convert
 from app.parsers.csv_parser import parse_csv
 from app.parsers.geojson_parser import parse_geojson
 from app.parsers.gpx_parser import parse_gpx
@@ -35,6 +37,23 @@ def _parse_file(path: Path) -> dict:
     )
 
 
+def _format_from_path(path: Path) -> str:
+    formats = {
+        ".shp": "shapefile",
+        ".geojson": "geojson",
+        ".json": "geojson",
+        ".kml": "kml",
+        ".gpx": "gpx",
+        ".csv": "csv",
+    }
+    target_format = formats.get(path.suffix.lower())
+    if target_format is None:
+        raise click.ClickException(
+            f"Unsupported output format '{path.suffix or '(none)'}'"
+        )
+    return target_format
+
+
 @geofile.command("parse")
 @click.argument(
     "file",
@@ -59,6 +78,39 @@ def parse_command(file: Path) -> None:
             for name, count in result["layer_counts"].items()
         )
         click.echo(f"Layers: {layers}")
+
+
+@geofile.command("convert")
+@click.argument(
+    "input_file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.argument(
+    "output_file",
+    type=click.Path(dir_okay=False, path_type=Path),
+)
+@click.option("--crs", "target_crs", help="Optional target CRS, such as EPSG:3857.")
+def convert_command(
+    input_file: Path,
+    output_file: Path,
+    target_crs: str | None,
+) -> None:
+    """Convert INPUT_FILE to the format implied by OUTPUT_FILE."""
+    try:
+        frame = load_any(str(input_file))
+        target_format = _format_from_path(output_file)
+        converted_path = convert(
+            frame,
+            target_format,
+            str(output_file),
+            target_crs=target_crs,
+        )
+    except click.ClickException:
+        raise
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"Converted file: {converted_path}")
 
 
 if __name__ == "__main__":
