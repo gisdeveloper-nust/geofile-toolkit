@@ -3,6 +3,7 @@
 import asyncio
 import base64
 from contextlib import asynccontextmanager
+from html import escape
 from pathlib import Path
 from tempfile import TemporaryDirectory, mkdtemp
 from zipfile import BadZipFile, ZipFile
@@ -20,7 +21,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from pydantic import BaseModel
 from pyproj import CRS
 from pyproj.exceptions import CRSError
@@ -119,6 +120,49 @@ def create_api_key(body: KeyGenerateRequest = KeyGenerateRequest()) -> KeyGenera
 def get_my_usage(api_key: str = Depends(verify_api_key)) -> dict:
     """Return usage totals for the authenticated API key."""
     return get_usage(api_key)
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def usage_dashboard(api_key: str = Depends(verify_api_key)) -> HTMLResponse:
+    """Render a small authenticated dashboard for the caller's usage."""
+    usage = get_usage(api_key)
+    endpoint_rows = "".join(
+        "<tr>"
+        f"<td>{escape(endpoint)}</td>"
+        f"<td>{count}</td>"
+        "</tr>"
+        for endpoint, count in sorted(usage["by_endpoint"].items())
+    ) or '<tr><td colspan="2">No processing requests yet.</td></tr>'
+    last_used = escape(usage["last_used_at"] or "Never")
+    body = f"""<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GeoFile Toolkit Usage</title>
+  <style>
+    body {{ font-family: system-ui, sans-serif; margin: 0; background: #f4f7f9; color: #17212b; }}
+    main {{ max-width: 900px; margin: 3rem auto; padding: 0 1rem; }}
+    .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 1rem; }}
+    .card, table {{ background: white; border-radius: 12px; box-shadow: 0 3px 14px #0001; }}
+    .card {{ padding: 1.25rem; }} .value {{ font-size: 1.7rem; font-weight: 700; }}
+    table {{ width: 100%; margin-top: 1.5rem; border-collapse: collapse; overflow: hidden; }}
+    th, td {{ padding: .8rem 1rem; text-align: left; border-bottom: 1px solid #e6ebef; }}
+    th {{ background: #123b52; color: white; }}
+  </style>
+</head>
+<body><main>
+  <h1>GeoFile Toolkit usage</h1>
+  <div class="cards">
+    <section class="card"><div>Total requests</div><div class="value">{usage['total_requests']}</div></section>
+    <section class="card"><div>Bytes processed</div><div class="value">{usage['total_bytes_processed']:,}</div></section>
+    <section class="card"><div>Last used</div><div class="value" style="font-size:1rem">{last_used}</div></section>
+  </div>
+  <table><thead><tr><th>Endpoint</th><th>Requests</th></tr></thead>
+    <tbody>{endpoint_rows}</tbody>
+  </table>
+</main></body></html>"""
+    return HTMLResponse(body)
 
 
 # ---------------------------------------------------------------------------
