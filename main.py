@@ -30,7 +30,7 @@ from slowapi.errors import RateLimitExceeded
 
 from app.middleware.rate_limiter import RATE_LIMIT_STRING, limiter
 from app.auth.api_key import generate_key
-from app.auth.dependencies import verify_api_key
+from app.auth.dependencies import track_api_usage, verify_api_key
 from app.jobs.cleanup import periodic_job_purge
 from app.jobs.job_queue import get_job, job_store_snapshot, purge_expired_jobs, submit_job
 from app.converters.base_converter import load_any
@@ -75,6 +75,7 @@ app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 _AUTH_DEP = [Depends(verify_api_key)]
+_USAGE_DEP = [Depends(track_api_usage)]
 
 
 # ---------------------------------------------------------------------------
@@ -200,7 +201,7 @@ async def _load_uploaded_spatial_file(
         ) from exc
 
 
-@app.post("/parse/shapefile", response_model=ParseResult, dependencies=_AUTH_DEP)
+@app.post("/parse/shapefile", response_model=ParseResult, dependencies=_USAGE_DEP)
 @limiter.limit(RATE_LIMIT_STRING)
 async def parse_shapefile_upload(
     request: Request,
@@ -243,7 +244,7 @@ async def parse_shapefile_upload(
     return ParseResult(**result)
 
 
-@app.post("/parse/geojson", response_model=ParseResult, dependencies=_AUTH_DEP)
+@app.post("/parse/geojson", response_model=ParseResult, dependencies=_USAGE_DEP)
 @limiter.limit(RATE_LIMIT_STRING)
 async def parse_geojson_upload(
     request: Request,
@@ -268,7 +269,7 @@ async def parse_geojson_upload(
     return ParseResult(**result)
 
 
-@app.post("/parse/kml", response_model=ParseResult, dependencies=_AUTH_DEP)
+@app.post("/parse/kml", response_model=ParseResult, dependencies=_USAGE_DEP)
 @limiter.limit(RATE_LIMIT_STRING)
 async def parse_kml_upload(
     request: Request,
@@ -291,7 +292,7 @@ async def parse_kml_upload(
     return ParseResult(**result)
 
 
-@app.post("/parse/gpx", dependencies=_AUTH_DEP)
+@app.post("/parse/gpx", dependencies=_USAGE_DEP)
 @limiter.limit(RATE_LIMIT_STRING)
 async def parse_gpx_upload(
     request: Request,
@@ -312,7 +313,7 @@ async def parse_gpx_upload(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@app.post("/parse/csv", dependencies=_AUTH_DEP)
+@app.post("/parse/csv", dependencies=_USAGE_DEP)
 @limiter.limit(RATE_LIMIT_STRING)
 async def parse_csv_upload(
     request: Request,
@@ -335,7 +336,7 @@ async def parse_csv_upload(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@app.post("/analyze/topology", response_model=TopologyReport, dependencies=_AUTH_DEP)
+@app.post("/analyze/topology", response_model=TopologyReport, dependencies=_USAGE_DEP)
 @limiter.limit(RATE_LIMIT_STRING)
 async def analyze_topology_upload(
     request: Request,
@@ -351,7 +352,7 @@ async def analyze_topology_upload(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@app.post("/analyze/clip", dependencies=_AUTH_DEP)
+@app.post("/analyze/clip", dependencies=_USAGE_DEP)
 @limiter.limit(RATE_LIMIT_STRING)
 async def analyze_clip_upload(
     request: Request,
@@ -382,7 +383,7 @@ async def analyze_clip_upload(
     )
 
 
-@app.post("/analyze/merge", dependencies=_AUTH_DEP)
+@app.post("/analyze/merge", dependencies=_USAGE_DEP)
 @limiter.limit(RATE_LIMIT_STRING)
 async def analyze_merge_upload(
     request: Request,
@@ -415,7 +416,7 @@ async def analyze_merge_upload(
     )
 
 
-@app.post("/analyze/spatial-join", dependencies=_AUTH_DEP)
+@app.post("/analyze/spatial-join", dependencies=_USAGE_DEP)
 @limiter.limit(RATE_LIMIT_STRING)
 async def analyze_spatial_join_upload(
     request: Request,
@@ -449,7 +450,7 @@ async def analyze_spatial_join_upload(
     )
 
 
-@app.post("/analyze/stats", response_model=GeometryStatsResult, dependencies=_AUTH_DEP)
+@app.post("/analyze/stats", response_model=GeometryStatsResult, dependencies=_USAGE_DEP)
 @limiter.limit(RATE_LIMIT_STRING)
 async def analyze_stats_upload(
     request: Request,
@@ -462,7 +463,7 @@ async def analyze_stats_upload(
     return GeometryStatsResult(**compute_geometry_stats(frame))
 
 
-@app.post("/validate/geojson", response_model=ValidationReport, dependencies=_AUTH_DEP)
+@app.post("/validate/geojson", response_model=ValidationReport, dependencies=_USAGE_DEP)
 @limiter.limit(RATE_LIMIT_STRING)
 async def validate_geojson_upload(
     request: Request,
@@ -495,7 +496,7 @@ async def validate_geojson_upload(
     )
 
 
-@app.post("/repair/geojson", dependencies=_AUTH_DEP)
+@app.post("/repair/geojson", dependencies=_USAGE_DEP)
 @limiter.limit(RATE_LIMIT_STRING)
 async def repair_geojson_upload(request: Request, file: UploadFile = File(...)) -> Response:
     """Repair GeoJSON geometries and return a downloadable repaired document."""
@@ -539,7 +540,7 @@ async def repair_geojson_upload(request: Request, file: UploadFile = File(...)) 
     )
 
 
-@app.post("/convert", dependencies=_AUTH_DEP, response_model=None)
+@app.post("/convert", dependencies=_USAGE_DEP, response_model=None)
 @limiter.limit(RATE_LIMIT_STRING)
 async def convert_upload(
     request: Request,
@@ -726,7 +727,7 @@ def _extract_zip_safely_sync(archive: ZipFile, destination: Path) -> None:
     archive.extractall(destination)
 
 
-@app.post("/batch/process", dependencies=_AUTH_DEP, response_model=None)
+@app.post("/batch/process", dependencies=_USAGE_DEP, response_model=None)
 @limiter.limit(RATE_LIMIT_STRING)
 async def batch_process_upload(
     request: Request,

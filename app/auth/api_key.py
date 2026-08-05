@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 import secrets
 from datetime import datetime, timezone
+from threading import Lock
 from typing import TypedDict
 
 
@@ -26,6 +27,7 @@ class KeyRecord(TypedDict):
     request_count: int
     last_used_at: str | None
     total_bytes_processed: int
+    endpoint_counts: dict[str, int]
 
 
 _KEY_PREFIX = "gftk_"
@@ -33,6 +35,7 @@ _KEY_HEX_BYTES = 16  # 128-bit → 32 hex chars
 
 # In-process key store: {raw_key: KeyRecord}
 _store: dict[str, KeyRecord] = {}
+_store_lock = Lock()
 
 
 def _now_iso() -> str:
@@ -54,6 +57,7 @@ def _bootstrap_from_env() -> None:
                 request_count=0,
                 last_used_at=None,
                 total_bytes_processed=0,
+                endpoint_counts={},
             )
 
 
@@ -75,6 +79,7 @@ def generate_key(label: str = "") -> KeyRecord:
         request_count=0,
         last_used_at=None,
         total_bytes_processed=0,
+        endpoint_counts={},
     )
     _store[raw] = record
     return record
@@ -93,3 +98,18 @@ def list_keys() -> list[KeyRecord]:
 def revoke_key(key: str) -> bool:
     """Remove *key* from the store.  Returns True if it existed."""
     return _store.pop(key, None) is not None
+
+
+def record_usage(api_key: str, endpoint: str, bytes_processed: int) -> None:
+    """Record one authenticated processing request for an API key."""
+    if bytes_processed < 0:
+        raise ValueError("bytes_processed cannot be negative")
+    with _store_lock:
+        record = _store.get(api_key)
+        if record is None:
+            raise KeyError("Unknown API key")
+        record["request_count"] += 1
+        record["last_used_at"] = _now_iso()
+        record["total_bytes_processed"] += bytes_processed
+        counts = record["endpoint_counts"]
+        counts[endpoint] = counts.get(endpoint, 0) + 1
