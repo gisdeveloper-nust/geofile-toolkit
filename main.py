@@ -29,7 +29,7 @@ from slowapi import _rate_limit_exceeded_handler
 from slowapi.errors import RateLimitExceeded
 
 from app.middleware.rate_limiter import RATE_LIMIT_STRING, limiter
-from app.auth.api_key import generate_key
+from app.auth.api_key import generate_key, get_usage
 from app.auth.dependencies import track_api_usage, verify_api_key
 from app.jobs.cleanup import periodic_job_purge
 from app.jobs.job_queue import get_job, job_store_snapshot, purge_expired_jobs, submit_job
@@ -107,6 +107,12 @@ def create_api_key(body: KeyGenerateRequest = KeyGenerateRequest()) -> KeyGenera
     """Generate a new API key and return it.  Store it securely — it will not be shown again."""
     record = generate_key(label=body.label)
     return KeyGenerateResponse(**record)
+
+
+@app.get("/usage/me")
+def get_my_usage(api_key: str = Depends(verify_api_key)) -> dict:
+    """Return usage totals for the authenticated API key."""
+    return get_usage(api_key)
 
 
 # ---------------------------------------------------------------------------

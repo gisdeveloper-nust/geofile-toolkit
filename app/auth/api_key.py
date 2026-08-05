@@ -113,3 +113,17 @@ def record_usage(api_key: str, endpoint: str, bytes_processed: int) -> None:
         record["total_bytes_processed"] += bytes_processed
         counts = record["endpoint_counts"]
         counts[endpoint] = counts.get(endpoint, 0) + 1
+
+
+def get_usage(api_key: str) -> dict:
+    """Return a copy of the usage totals associated with an API key."""
+    with _store_lock:
+        record = _store.get(api_key)
+        if record is None:
+            raise KeyError("Unknown API key")
+        return {
+            "total_requests": record["request_count"],
+            "last_used_at": record["last_used_at"],
+            "total_bytes_processed": record["total_bytes_processed"],
+            "by_endpoint": dict(record["endpoint_counts"]),
+        }
