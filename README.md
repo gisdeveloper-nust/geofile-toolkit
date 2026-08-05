@@ -316,6 +316,78 @@ curl -X POST "http://127.0.0.1:8000/analyze/stats" \
 
 Use a projected CRS when metric area or length values are required.
 
+## CLI Usage
+
+Install GeoFile Toolkit in editable mode from the repository root. This makes
+the `geofile` executable available in the active Python environment:
+
+```bash
+python -m pip install -e .
+geofile --version
+```
+
+### Parse a file
+
+Parse supported formats directly and print geometry type, feature count, CRS,
+and bounding box metadata:
+
+```bash
+geofile parse path/to/parcels.geojson
+geofile parse path/to/activity.gpx
+```
+
+### Convert a file
+
+The output extension selects the target format. Use `--crs` when the output
+must be reprojected:
+
+```bash
+geofile convert path/to/parcels.geojson output/parcels.shp
+geofile convert path/to/points.csv output/points.geojson --crs EPSG:3857
+```
+
+### Validate geometries
+
+Print each invalid feature and its issue, or a clean-result message:
+
+```bash
+geofile validate path/to/parcels.geojson
+```
+
+### Repair geometries
+
+Repair fixable geometries and print fixed and unfixable totals. Without
+`--output`, the CLI writes `<name>_repaired.<format>` beside the input:
+
+```bash
+geofile repair path/to/parcels.geojson
+geofile repair path/to/parcels.geojson --output output/parcels_fixed.geojson
+```
+
+### Analyze spatial data
+
+Return geometry statistics as formatted JSON:
+
+```bash
+geofile analyze path/to/parcels.geojson --op stats
+```
+
+Clip, merge, and join require a second layer through `--against` and write
+GeoJSON results. Spatial joins default to `intersects` and also support
+`within` and `contains`:
+
+```bash
+geofile analyze path/to/roads.geojson --op clip \
+  --against path/to/study-area.geojson --output output/roads_clipped.geojson
+
+geofile analyze path/to/north.geojson --op merge \
+  --against path/to/south.geojson --output output/regions_merged.geojson
+
+geofile analyze path/to/points.geojson --op join \
+  --against path/to/districts.geojson --predicate within \
+  --output output/points_with_districts.geojson
+```
+
 Run the automated tests with:
 
 ```bash
