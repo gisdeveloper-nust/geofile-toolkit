@@ -388,6 +388,74 @@ geofile analyze path/to/points.geojson --op join \
   --output output/points_with_districts.geojson
 ```
 
+## Usage Tracking
+
+Authenticated processing endpoints track request counts, the last-used time,
+uploaded bytes, and a per-endpoint breakdown for each API key. Supply the key
+through the `X-API-Key` header.
+
+Retrieve the current key's totals:
+
+```bash
+curl "http://127.0.0.1:8000/usage/me" \
+  -H "X-API-Key: gftk_your_key_here"
+```
+
+Example response:
+
+```json
+{
+  "total_requests": 3,
+  "last_used_at": "2026-08-06T12:00:00+00:00",
+  "total_bytes_processed": 245760,
+  "by_endpoint": {
+    "/parse/geojson": 2,
+    "/convert": 1
+  }
+}
+```
+
+### Usage dashboard
+
+`GET /dashboard` provides the same caller-specific totals as a compact,
+server-rendered HTML dashboard. It is protected by the API key header and does
+not use a JavaScript framework.
+
+```bash
+curl "http://127.0.0.1:8000/dashboard" \
+  -H "X-API-Key: gftk_your_key_here" \
+  -o usage-dashboard.html
+```
+
+Open `usage-dashboard.html` in a browser, or configure an authenticated proxy
+that adds `X-API-Key` when viewing the dashboard directly.
+
+## Handling Large Files
+
+GeoFile Toolkit writes large uploads incrementally instead of holding the
+entire upload in memory. Parse and conversion uploads switch to chunked writes
+at 8 MiB by default. Large conversion downloads use a streaming response and
+are cleaned up only after delivery completes.
+
+Configure the streaming threshold in bytes before starting the API:
+
+```bash
+set GEOFILE_STREAMING_THRESHOLD_BYTES=8388608
+uvicorn main:app
+```
+
+Uploads larger than 100 MiB are rejected with HTTP `413 Payload Too Large` by
+default. Configure the hard cap with `GEOFILE_MAX_UPLOAD_BYTES`:
+
+```bash
+set GEOFILE_MAX_UPLOAD_BYTES=104857600
+uvicorn main:app
+```
+
+Both settings must be positive byte counts and are read when the application
+starts. Lower limits are useful for constrained deployments; raise the cap
+only when the host has sufficient temporary disk capacity.
+
 Run the automated tests with:
 
 ```bash
@@ -405,3 +473,6 @@ python -m pytest
 - [x] Mixed-file batch processing
 - [x] Polygon topology validation
 - [x] Spatial analysis operations
+- [x] Installable command-line interface
+- [x] Per-key usage dashboard
+- [x] Chunked large-file processing
