@@ -12,6 +12,7 @@ from app.parsers.geojson_parser import parse_geojson
 from app.parsers.gpx_parser import parse_gpx
 from app.parsers.kml_parser import parse_kml
 from app.parsers.shapefile_parser import parse_shapefile
+from app.repairs.geometry_repair import repair_batch
 from app.validators.geometry_validator import detect_geometry_issues
 
 
@@ -137,6 +138,40 @@ def validate_command(file: Path) -> None:
             f"- Feature {issue['feature_index']}: "
             f"{issue['issue_type']} - {issue['description']}"
         )
+
+
+@geofile.command("repair")
+@click.argument(
+    "file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.option(
+    "--output",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="Output path; defaults to <name>_repaired.<format>.",
+)
+def repair_command(file: Path, output: Path | None) -> None:
+    """Repair invalid geometries in FILE and write the repaired layer."""
+    output_path = output or file.with_name(f"{file.stem}_repaired{file.suffix}")
+    try:
+        frame = load_any(str(file))
+        repaired_frame, report = repair_batch(frame)
+        target_format = _format_from_path(output_path)
+        converted_path = convert(
+            repaired_frame,
+            target_format,
+            str(output_path),
+        )
+    except click.ClickException:
+        raise
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    fixed_count = sum(item["status"] == "fixed" for item in report)
+    unfixable_count = sum(item["status"] == "unfixable" for item in report)
+    click.echo(f"Fixed: {fixed_count}")
+    click.echo(f"Unfixable: {unfixable_count}")
+    click.echo(f"Repaired file: {converted_path}")
 
 
 if __name__ == "__main__":
