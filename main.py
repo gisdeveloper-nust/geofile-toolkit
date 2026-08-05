@@ -20,7 +20,7 @@ from fastapi import (
     Response,
     UploadFile,
 )
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel
 from pyproj import CRS
 from pyproj.exceptions import CRSError
@@ -58,7 +58,12 @@ from app.parsers.shapefile_parser import ShapefileParseError, parse_shapefile
 from app.repairs.geometry_repair import repair_batch
 from app.utils.batch_processor import process_zip
 from app.utils.file_cleanup import cleanup_temp_files
-from app.utils.streaming import FileSizeLimitExceeded, save_upload_file
+from app.utils.streaming import (
+    STREAMING_THRESHOLD_BYTES,
+    FileSizeLimitExceeded,
+    save_upload_file,
+    stream_large_file,
+)
 from app.validators.geometry_validator import detect_geometry_issues
 
 @asynccontextmanager
@@ -576,7 +581,7 @@ async def convert_upload(
     target_format: str = Form(...),
     target_crs: str | None = Form(None),
     async_mode: bool = Query(False, alias="async"),
-) -> FileResponse | dict:
+) -> FileResponse | StreamingResponse | dict:
     """Convert an uploaded geospatial file and return it as a download.
 
     Pass ``?async=true`` to receive a ``{"job_id": "..."}`` immediately and
@@ -658,14 +663,26 @@ async def convert_upload(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     download_path = Path(result_dict["download_path"])
+    response_headers = {
+        "X-Conversion-Result": result_dict["encoded_result"],
+        "X-Conversion-Result-Encoding": "base64url",
+    }
+    if download_path.stat().st_size > STREAMING_THRESHOLD_BYTES:
+        response_headers["Content-Disposition"] = (
+            f'attachment; filename="{download_path.name}"'
+        )
+        return StreamingResponse(
+            stream_large_file(download_path),
+            media_type=result_dict["media_type"],
+            headers=response_headers,
+            background=background_tasks,
+        )
+
     return FileResponse(
         path=download_path,
         media_type=result_dict["media_type"],
         filename=download_path.name,
-        headers={
-            "X-Conversion-Result": result_dict["encoded_result"],
-            "X-Conversion-Result-Encoding": "base64url",
-        },
+        headers=response_headers,
         background=background_tasks,
     )
 
