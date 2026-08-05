@@ -12,6 +12,7 @@ from app.parsers.geojson_parser import parse_geojson
 from app.parsers.gpx_parser import parse_gpx
 from app.parsers.kml_parser import parse_kml
 from app.parsers.shapefile_parser import parse_shapefile
+from app.validators.geometry_validator import detect_geometry_issues
 
 
 @click.group()
@@ -111,6 +112,31 @@ def convert_command(
         raise click.ClickException(str(exc)) from exc
 
     click.echo(f"Converted file: {converted_path}")
+
+
+@geofile.command("validate")
+@click.argument(
+    "file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+def validate_command(file: Path) -> None:
+    """Validate every geometry in FILE and print detected issues."""
+    try:
+        frame = load_any(str(file))
+        issues = detect_geometry_issues(frame)
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    if not issues:
+        click.echo("No issues found.")
+        return
+
+    click.echo(f"Found {len(issues)} geometry issue(s):")
+    for issue in issues:
+        click.echo(
+            f"- Feature {issue['feature_index']}: "
+            f"{issue['issue_type']} - {issue['description']}"
+        )
 
 
 if __name__ == "__main__":
