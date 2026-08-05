@@ -58,7 +58,7 @@ from app.parsers.shapefile_parser import ShapefileParseError, parse_shapefile
 from app.repairs.geometry_repair import repair_batch
 from app.utils.batch_processor import process_zip
 from app.utils.file_cleanup import cleanup_temp_files
-from app.utils.streaming import save_upload_file
+from app.utils.streaming import FileSizeLimitExceeded, save_upload_file
 from app.validators.geometry_validator import detect_geometry_issues
 
 @asynccontextmanager
@@ -180,6 +180,20 @@ def _add_processed_bytes(request: Request, byte_count: int) -> None:
     )
 
 
+async def _save_upload(
+    request: Request,
+    file: UploadFile,
+    destination: Path,
+) -> int:
+    try:
+        byte_count = await save_upload_file(file, destination)
+    except FileSizeLimitExceeded as exc:
+        destination.unlink(missing_ok=True)
+        raise HTTPException(status_code=413, detail=str(exc)) from exc
+    _add_processed_bytes(request, byte_count)
+    return byte_count
+
+
 async def _load_uploaded_spatial_file(
     file: UploadFile,
     workspace: Path,
@@ -227,7 +241,7 @@ async def parse_shapefile_upload(
 
     workspace = _background_workspace(background_tasks)
     archive_path = workspace / "upload.zip"
-    _add_processed_bytes(request, await save_upload_file(file, archive_path))
+    await _save_upload(request, file, archive_path)
 
     try:
         with ZipFile(archive_path) as archive:
@@ -273,7 +287,7 @@ async def parse_geojson_upload(
 
     workspace = _background_workspace(background_tasks)
     upload_path = workspace / Path(filename).name
-    _add_processed_bytes(request, await save_upload_file(file, upload_path))
+    await _save_upload(request, file, upload_path)
     try:
         result = parse_geojson(str(upload_path))
     except GeoJSONParseError as exc:
@@ -296,7 +310,7 @@ async def parse_kml_upload(
 
     workspace = _background_workspace(background_tasks)
     upload_path = workspace / Path(filename).name
-    _add_processed_bytes(request, await save_upload_file(file, upload_path))
+    await _save_upload(request, file, upload_path)
     try:
         result = parse_kml(str(upload_path))
     except KMLParseError as exc:
@@ -319,7 +333,7 @@ async def parse_gpx_upload(
 
     workspace = _background_workspace(background_tasks)
     upload_path = workspace / Path(filename).name
-    _add_processed_bytes(request, await save_upload_file(file, upload_path))
+    await _save_upload(request, file, upload_path)
     try:
         return parse_gpx(str(upload_path))
     except GPXParseError as exc:
@@ -342,7 +356,7 @@ async def parse_csv_upload(
 
     workspace = _background_workspace(background_tasks)
     upload_path = workspace / Path(filename).name
-    _add_processed_bytes(request, await save_upload_file(file, upload_path))
+    await _save_upload(request, file, upload_path)
     try:
         return parse_csv(str(upload_path), lat_col=lat_col, lon_col=lon_col)
     except CSVParseError as exc:
@@ -618,7 +632,7 @@ async def convert_upload(
 
     workspace = Path(mkdtemp(prefix="geofile-toolkit-"))
     upload_path = workspace / filename
-    _add_processed_bytes(request, await save_upload_file(file, upload_path))
+    await _save_upload(request, file, upload_path)
 
     if async_mode:
         job_id = submit_job(
