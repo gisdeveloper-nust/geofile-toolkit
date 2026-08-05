@@ -23,6 +23,9 @@ class KeyRecord(TypedDict):
     key: str
     label: str
     created_at: str  # ISO-8601 UTC
+    request_count: int
+    last_used_at: str | None
+    total_bytes_processed: int
 
 
 _KEY_PREFIX = "gftk_"
@@ -48,6 +51,9 @@ def _bootstrap_from_env() -> None:
                 key=raw_key,
                 label="env-bootstrap",
                 created_at=_now_iso(),
+                request_count=0,
+                last_used_at=None,
+                total_bytes_processed=0,
             )
 
 
@@ -66,6 +72,9 @@ def generate_key(label: str = "") -> KeyRecord:
         key=raw,
         label=label or "unnamed",
         created_at=_now_iso(),
+        request_count=0,
+        last_used_at=None,
+        total_bytes_processed=0,
     )
     _store[raw] = record
     return record
