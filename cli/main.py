@@ -1,10 +1,17 @@
 """GeoFile Toolkit command-line interface."""
 
+import json
 from pathlib import Path
 
 import click
 
 from cli import __version__
+from app.analysis.spatial_ops import (
+    clip_layer,
+    compute_geometry_stats,
+    merge_layers,
+    spatial_join,
+)
 from app.converters.base_converter import load_any
 from app.converters.format_converter import convert
 from app.parsers.csv_parser import parse_csv
@@ -172,6 +179,64 @@ def repair_command(file: Path, output: Path | None) -> None:
     click.echo(f"Fixed: {fixed_count}")
     click.echo(f"Unfixable: {unfixable_count}")
     click.echo(f"Repaired file: {converted_path}")
+
+
+@geofile.command("analyze")
+@click.argument(
+    "file",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+)
+@click.option(
+    "--op",
+    type=click.Choice(["clip", "merge", "join", "stats"]),
+    required=True,
+)
+@click.option(
+    "--against",
+    type=click.Path(exists=True, dir_okay=False, path_type=Path),
+    help="Second layer required by clip, merge, and join.",
+)
+@click.option(
+    "--predicate",
+    type=click.Choice(["intersects", "within", "contains"]),
+    default="intersects",
+    show_default=True,
+)
+@click.option(
+    "--output",
+    type=click.Path(dir_okay=False, path_type=Path),
+    help="GeoJSON output path for clip, merge, or join.",
+)
+def analyze_command(
+    file: Path,
+    op: str,
+    against: Path | None,
+    predicate: str,
+    output: Path | None,
+) -> None:
+    """Run a clip, merge, join, or statistics operation on FILE."""
+    try:
+        input_frame = load_any(str(file))
+        if op == "stats":
+            click.echo(json.dumps(compute_geometry_stats(input_frame), indent=2))
+            return
+        if against is None:
+            raise click.UsageError(f"--against is required for {op}")
+
+        against_frame = load_any(str(against))
+        if op == "clip":
+            result = clip_layer(input_frame, against_frame)
+        elif op == "merge":
+            result = merge_layers([input_frame, against_frame])
+        else:
+            result = spatial_join(input_frame, against_frame, predicate)
+
+        output_path = output or file.with_name(f"{file.stem}_{op}.geojson")
+        converted_path = convert(result, "geojson", str(output_path))
+    except (OSError, ValueError) as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    click.echo(f"Analysis result: {converted_path}")
 
 
 if __name__ == "__main__":
