@@ -58,6 +58,7 @@ from app.parsers.shapefile_parser import ShapefileParseError, parse_shapefile
 from app.repairs.geometry_repair import repair_batch
 from app.utils.batch_processor import process_zip
 from app.utils.file_cleanup import cleanup_temp_files
+from app.utils.streaming import save_upload_file
 from app.validators.geometry_validator import detect_geometry_issues
 
 @asynccontextmanager
@@ -173,6 +174,12 @@ def _background_workspace(background_tasks: BackgroundTasks) -> Path:
     return workspace
 
 
+def _add_processed_bytes(request: Request, byte_count: int) -> None:
+    request.state.bytes_processed = (
+        getattr(request.state, "bytes_processed", 0) + byte_count
+    )
+
+
 async def _load_uploaded_spatial_file(
     file: UploadFile,
     workspace: Path,
@@ -220,7 +227,7 @@ async def parse_shapefile_upload(
 
     workspace = _background_workspace(background_tasks)
     archive_path = workspace / "upload.zip"
-    archive_path.write_bytes(await file.read())
+    _add_processed_bytes(request, await save_upload_file(file, archive_path))
 
     try:
         with ZipFile(archive_path) as archive:
@@ -266,7 +273,7 @@ async def parse_geojson_upload(
 
     workspace = _background_workspace(background_tasks)
     upload_path = workspace / Path(filename).name
-    upload_path.write_bytes(await file.read())
+    _add_processed_bytes(request, await save_upload_file(file, upload_path))
     try:
         result = parse_geojson(str(upload_path))
     except GeoJSONParseError as exc:
@@ -289,7 +296,7 @@ async def parse_kml_upload(
 
     workspace = _background_workspace(background_tasks)
     upload_path = workspace / Path(filename).name
-    upload_path.write_bytes(await file.read())
+    _add_processed_bytes(request, await save_upload_file(file, upload_path))
     try:
         result = parse_kml(str(upload_path))
     except KMLParseError as exc:
@@ -312,7 +319,7 @@ async def parse_gpx_upload(
 
     workspace = _background_workspace(background_tasks)
     upload_path = workspace / Path(filename).name
-    upload_path.write_bytes(await file.read())
+    _add_processed_bytes(request, await save_upload_file(file, upload_path))
     try:
         return parse_gpx(str(upload_path))
     except GPXParseError as exc:
@@ -335,7 +342,7 @@ async def parse_csv_upload(
 
     workspace = _background_workspace(background_tasks)
     upload_path = workspace / Path(filename).name
-    upload_path.write_bytes(await file.read())
+    _add_processed_bytes(request, await save_upload_file(file, upload_path))
     try:
         return parse_csv(str(upload_path), lat_col=lat_col, lon_col=lon_col)
     except CSVParseError as exc:
@@ -609,16 +616,15 @@ async def convert_upload(
     elif normalized_target == "kml":
         effective_target_crs = "EPSG:4326"
 
-    # Read file bytes once; the rest can run in the background.
-    file_bytes = await file.read()
     workspace = Path(mkdtemp(prefix="geofile-toolkit-"))
+    upload_path = workspace / filename
+    _add_processed_bytes(request, await save_upload_file(file, upload_path))
 
     if async_mode:
         job_id = submit_job(
             _sync_convert,
             workspace,
             filename,
-            file_bytes,
             normalized_target,
             effective_target_crs,
         )
@@ -628,7 +634,7 @@ async def convert_upload(
     background_tasks.add_task(cleanup_temp_files, workspace)
     try:
         result_dict = _sync_convert(
-            workspace, filename, file_bytes, normalized_target, effective_target_crs
+            workspace, filename, normalized_target, effective_target_crs
         )
     except HTTPException:
         cleanup_temp_files(workspace)
@@ -653,13 +659,11 @@ async def convert_upload(
 def _sync_convert(
     workspace: Path,
     filename: str,
-    file_bytes: bytes,
     normalized_target: str,
     effective_target_crs: str | None,
 ) -> dict:
     """Blocking conversion logic, safe to run in a thread-pool worker."""
     upload_path = workspace / filename
-    upload_path.write_bytes(file_bytes)
 
     source_path = upload_path
     source_formats = {
